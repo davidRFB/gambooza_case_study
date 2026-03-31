@@ -4,6 +4,10 @@ __pycache__/
 *$py.class
 *.mp4
 *.png
+data/explore_output/
+*.ts
+data/explore_tabs_output/
+
 # C extensions
 *.so
 *.pt
