@@ -1,0 +1,24 @@
+# Custom BoT-SORT config — tuned for beer-tap cup tracking.
+#
+# Key changes vs ultralytics defaults:
+#   track_buffer:     30 → 120  (keep lost tracks alive 6s instead of 1.5s)
+#   track_high_thresh: 0.25 → 0.20  (accept slightly weaker first-pass matches)
+#   new_track_thresh:  0.25 → 0.30  (prefer re-association over creating new IDs)
+#   match_thresh:      0.8 → 0.70  (more lenient cost matching after occlusion)
+
+tracker_type: botsort
+track_high_thresh: 0.20
+track_low_thresh: 0.1
+new_track_thresh: 0.30
+track_buffer: 120
+match_thresh: 0.70
+fuse_score: True
+
+# Global motion compensation (camera is static, so sparseOptFlow is fine)
+gmc_method: sparseOptFlow
+
+# ReID (disabled — no extra model needed for this use case)
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+with_reid: False
+model: auto

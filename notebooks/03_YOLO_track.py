@@ -1,8 +1,10 @@
 """
-YOLO-based beer pour detector using model.track() for proper object tracking.
+YOLO-World beer pour detector using model.track() for proper object tracking.
 
-Uses YOLO's built-in BoT-SORT/ByteTrack tracker so each object gets a persistent
-track ID across frames, avoiding double-counting.
+Uses YOLO-World for open-vocabulary detection (only "cup" + "person" by default)
+combined with BoT-SORT/ByteTrack tracker so each object gets a persistent track
+ID across frames.  A tuned BoT-SORT config (config/botsort.yaml) keeps lost
+tracks alive longer to reduce ID switches during occlusions.
 
 Usage examples
 --------------
@@ -12,13 +14,13 @@ python 03_YOLO_track.py --video ../data/videos/cerveza2.mp4 --output ../results/
 # Re-run with saved coordinates (skip ROI selection)
 python 03_YOLO_track.py --video ../data/videos/cerveza2.mp4 --output ../results/cerveza2_track
 
-# Override saved ROI and divider with explicit values
+# Use standard YOLOv8 (all 80 COCO classes) instead of YOLO-World
 python 03_YOLO_track.py --video ../data/videos/cerveza2.mp4 --output ../results/cerveza2_track \
-    --tap-roi 0.4609 0.3398 0.6724 0.8796 --tap-divider 0.5 0.0 0.5 1.0
+    --model yolov8x.pt
 
-# Tweak detection parameters
+# Detect additional classes with YOLO-World
 python 03_YOLO_track.py --video ../data/videos/cerveza2.mp4 --output ../results/cerveza2_track \
-    --sample-every 2 --merge-gap 3.0
+    --classes cup person bottle
 
 # Export annotated video clip for a time range (e.g. 50s to 80s)
 python 03_YOLO_track.py --video ../data/videos/cerveza2.mp4 --output ../results/cerveza2_track \
@@ -34,7 +36,7 @@ from pathlib import Path
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-from ultralytics import YOLO
+from ultralytics import YOLO, YOLOWorld
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -66,14 +68,19 @@ def parse_args():
                         "Left of line = Tap A, right = Tap B. Overrides saved value.")
 
     # Model / detection
-    p.add_argument("--model", default="yolov8x.pt",
-                   help="YOLO weights file or Ultralytics model name.")
+    p.add_argument("--model", default="yolov8x-worldv2.pt",
+                   help="YOLO weights file or Ultralytics model name. "
+                        "Use a *-world*.pt model for open-vocabulary detection.")
+    p.add_argument("--classes", nargs="+", default=["cup", "person"],
+                   help="Classes to detect (only used with YOLO-World models). "
+                        "Ignored for standard YOLO models that use fixed COCO classes.")
     p.add_argument("--sample-every", type=int, default=1,
                    help="Process every Nth frame (1 = every frame, recommended for tracking).")
     p.add_argument("--preview-second", type=float, default=60.0,
                    help="Timestamp (s) used for the 'beer being served' preview frame.")
-    p.add_argument("--tracker", default="botsort.yaml",
-                   help="Tracker config: botsort.yaml or bytetrack.yaml.")
+    p.add_argument("--tracker", default="../config/botsort.yaml",
+                   help="Tracker config file (botsort.yaml or bytetrack.yaml). "
+                        "Default points to the project's tuned config.")
     p.add_argument("--conf-threshold", type=float, default=0.25,
                    help="Minimum detection confidence.")
 
@@ -341,8 +348,15 @@ def main():
         savefig(fig, args.output, "01b_tap_division.png")
 
     # -- Load YOLO ----------------------------------------------------------
-    print(f"\nLoading YOLO model: {args.model}")
-    model = YOLO(args.model)
+    is_world = "world" in str(args.model).lower()
+    if is_world:
+        print(f"\nLoading YOLO-World model: {args.model}")
+        model = YOLOWorld(args.model)
+        model.set_classes(args.classes)
+        print(f"  Detecting classes: {args.classes}")
+    else:
+        print(f"\nLoading YOLO model: {args.model}")
+        model = YOLO(args.model)
 
     # -- Full-video tracking ------------------------------------------------
     print(f"\nTracking video every {args.sample_every} frame(s) "
