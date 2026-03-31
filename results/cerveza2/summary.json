@@ -1,0 +1,30 @@
+{
+  "video": "../data/videos/cerveza2.mp4",
+  "tap_roi": [
+    0.4484375,
+    0.3972222222222222,
+    0.6541666666666667,
+    0.8296296296296296
+  ],
+  "fps": 20.004000800160032,
+  "total_frames": 1800,
+  "duration_s": 89.982,
+  "sample_every": 10,
+  "total_detections": 722,
+  "cup_tracks": 7,
+  "pour_events": [
+    {
+      "id": 1,
+      "start_s": 0.0,
+      "end_s": 31.4937,
+      "duration_s": 31.4937,
+      "track_ids": [
+        1,
+        3,
+        4,
+        5,
+        6
+      ]
+    }
+  ]
+}
