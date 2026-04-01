@@ -5,3 +5,10 @@ ipython
 ipykernel
 pandas
 ultralytics
+fastapi
+uvicorn[standard]
+sqlalchemy
+aiofiles
+python-multipart
+pyyaml
+pytest

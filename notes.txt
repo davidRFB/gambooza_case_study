@@ -1,3 +1,16 @@
-01_explore.py 
+01_explore.py
 
-did not have way to differentiate between taps 
+did not have way to differentiate between taps
+
+---
+
+BACKEND TODOs
+=============
+
+## Tests to add
+- [ ] test_schemas.py: edge cases — nullable fields, missing values, validation rejects bad input
+- [ ] test_schemas.py: from_attributes — create schema from ORM model object
+
+## Phase 3 (Polish)
+- [ ] Frontend ROI picker — draw boxes on video frame in Streamlit
+- [ ] Handle multiple camera setups with different ROIs
