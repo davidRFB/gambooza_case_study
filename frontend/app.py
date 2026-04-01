@@ -1,3 +1,5 @@
+import time
+
 import pandas as pd
 import streamlit as st
 from utils.api_client import (
@@ -65,6 +67,9 @@ with tab_upload:
                 )
                 if st.button("Refresh Status"):
                     st.rerun()
+                # Auto-poll: check every 10s so queued videos start automatically
+                time.sleep(10)
+                st.rerun()
             else:
                 process_video(video_id)
                 st.toast(f"Processing started: {status['original_name']}")
@@ -74,23 +79,35 @@ with tab_upload:
             st.warning(f"Processing: {status['original_name']}")
             if st.button("Refresh Status"):
                 st.rerun()
+            # Auto-poll: check every 10s for completion
+            time.sleep(10)
+            st.rerun()
 
-        elif status["status"] == "completed":
-            st.success(f"Completed: {status['original_name']}")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Tap A", status["tap_a_count"])
-            c2.metric("Tap B", status["tap_b_count"])
-            c3.metric("Total", status["total"])
+        elif status["status"] in ("completed", "error"):
+            if status["status"] == "completed":
+                st.success(f"Completed: {status['original_name']}")
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Tap A", status["tap_a_count"])
+                c2.metric("Tap B", status["tap_b_count"])
+                c3.metric("Total", status["total"])
 
-            if status["events"]:
-                st.subheader("Pour Events")
-                events_df = pd.DataFrame(status["events"])
-                events_df = events_df[["tap", "timestamp_start", "timestamp_end", "count"]]
-                events_df.columns = ["Tap", "Start (s)", "End (s)", "Count"]
-                st.dataframe(events_df, use_container_width=True)
+                if status["events"]:
+                    st.subheader("Pour Events")
+                    events_df = pd.DataFrame(status["events"])
+                    events_df = events_df[["tap", "timestamp_start", "timestamp_end", "count"]]
+                    events_df.columns = ["Tap", "Start (s)", "End (s)", "Count"]
+                    st.dataframe(events_df, use_container_width=True)
+            else:
+                st.error(f"Processing failed: {status.get('error_message', 'Unknown error')}")
 
-        elif status["status"] == "error":
-            st.error(f"Processing failed: {status.get('error_message', 'Unknown error')}")
+            # Auto-start next pending video in queue
+            all_videos = list_videos()
+            next_pending = next((v for v in all_videos if v["status"] == "pending"), None)
+            if next_pending:
+                st.session_state.active_video_id = next_pending["id"]
+                process_video(next_pending["id"])
+                st.toast(f"Processing next: {next_pending['original_name']}")
+                st.rerun()
 
 # --- Tab 2: Dashboard ---
 with tab_dashboard:

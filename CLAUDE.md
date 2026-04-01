@@ -13,12 +13,16 @@ A self-contained application that counts beers served from a dual-tap beer dispe
 ```
 gambooza_case_study/
 ├── CLAUDE.md
+├── pyproject.toml                  # Project config: deps, ruff, pytest
+├── uv.lock                        # Reproducible dependency lockfile
+├── .pre-commit-config.yaml         # Ruff lint + format on commit
 ├── docker-compose.yml              # (TODO) Docker Compose for full stack
 │
 ├── backend/
 │   ├── __init__.py
 │   ├── main.py                     # FastAPI app entry point
 │   ├── config.py                   # Settings, paths, constants
+│   ├── logging_config.py           # Logging setup (console + optional file)
 │   ├── database/
 │   │   ├── __init__.py
 │   │   ├── connection.py           # Engine, SessionLocal, init_db, get_db
@@ -555,7 +559,7 @@ python scripts/run_yolo_pipeline.py --config config/pipeline.yaml --force
 
 ### Test Suite (44 tests)
 
-Run with: `source .venv-gambooza/bin/activate && python -m pytest tests/ -v`
+Run with: `uv run pytest tests/ -v`
 
 | File | Tests | What it covers |
 |------|-------|----------------|
@@ -578,12 +582,33 @@ Run with: `source .venv-gambooza/bin/activate && python -m pytest tests/ -v`
 
 ## 8. Development Environment
 
-- **Python:** 3.11 via `.venv-gambooza` (managed with `uv`)
-- **Install deps:** `source .venv-gambooza/bin/activate && uv pip install -r requirements.txt`
-- **Run backend:** `uvicorn backend.main:app --port 8000 --reload`
-- **Run frontend:** `cd frontend && streamlit run app.py`
-- **Run tests:** `python -m pytest tests/ -v`
+- **Python:** 3.11 via `.venv` (managed with `uv` and `pyproject.toml`)
+- **Install deps:** `uv sync` (installs all deps + dev group from `pyproject.toml`)
+- **Add a dependency:** `uv add <package>` or `uv add --dev <package>`
+- **Run backend:** `uv run uvicorn backend.main:app --port 8000 --reload`
+- **Run frontend:** `cd frontend && uv run streamlit run app.py`
+- **Run tests:** `uv run pytest tests/ -v`
+- **Lint:** `uv run ruff check .` (auto-fix: `uv run ruff check --fix .`)
+- **Format:** `uv run ruff format .`
 - **DB location:** `data/db_files/app.db` (delete to reset schema)
+
+### Code Quality
+
+- **Ruff** — linter + formatter (replaces Black, flake8, isort). Config in `pyproject.toml`.
+- **Pre-commit** — runs `ruff check --fix` and `ruff format` on every `git commit`.
+  - Install hooks: `uv run pre-commit install`
+  - Run manually: `uv run pre-commit run --all-files`
+- **Ruff rules:** `E` (pycodestyle), `W` (warnings), `F` (pyflakes), `I` (isort), `UP` (pyupgrade)
+- **Excluded:** `notebooks/` (exploration code, not production)
+
+### Logging
+
+- **Config:** `backend/logging_config.py` — called on app startup via `setup_logging()`
+- **Console:** always on, format: `%(asctime)s | %(name)s | %(levelname)s | %(message)s`
+- **File:** optional, enabled via `LOG_TO_FILE=true` env var → `data/logs/app.log` (rotating, 10MB max, 3 backups)
+- **Level:** configurable via `LOG_LEVEL` env var (default: `INFO`)
+- **Usage:** every module uses `logger = logging.getLogger(__name__)`
+- **Noisy loggers silenced:** `ultralytics`, `urllib3` set to WARNING
 
 ---
 
@@ -664,41 +689,28 @@ Before the presentation, verify:
 
 ## 12. Dependencies Summary
 
-### Backend (`requirements.txt`)
+All dependencies are managed in `pyproject.toml` with `uv`.
+
+### Production dependencies (`[project].dependencies`)
 
 ```
-opencv-python
-numpy
-matplotlib
-ipython
-ipykernel
-pandas
-ultralytics
-fastapi
-uvicorn[standard]
-sqlalchemy
-aiofiles
-python-multipart
-pyyaml
+opencv-python, numpy, matplotlib, pandas, ultralytics,
+fastapi, uvicorn[standard], sqlalchemy, aiofiles,
+python-multipart, pyyaml, streamlit, requests
 ```
 
-### Frontend (`frontend/requirements.txt`)
+### Dev dependencies (`[dependency-groups].dev`)
 
 ```
-streamlit>=1.30
-requests>=2.31
-```
-
-### Test dependencies
-
-```
-pytest
+pytest, ruff, pre-commit, httpx, ipython, ipykernel
 ```
 
 ### Environment
 
-Managed with `uv` in `.venv-gambooza`:
+Managed with `uv` in `.venv`:
 ```bash
-source .venv-gambooza/bin/activate
-uv pip install -r requirements.txt
+uv sync              # install all deps + dev group
+uv run pytest        # run in managed env
+uv add <package>     # add production dep
+uv add --dev <pkg>   # add dev dep
 ```

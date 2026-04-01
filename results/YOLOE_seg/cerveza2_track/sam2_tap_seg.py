@@ -1,7 +1,8 @@
-from ultralytics import SAM
 from pathlib import Path
+
 import cv2
 import numpy as np
+from ultralytics import SAM
 
 IMAGE = Path(__file__).parent / "01b_tap_division.png"
 OUT = Path(__file__).parent / "sam2_tap_result.png"
@@ -23,7 +24,9 @@ for label, point in [("TAP_A", TAP_A), ("TAP_B", TAP_B)]:
         overlay = img.copy()
         overlay[mask > 0] = (overlay[mask > 0] * 0.5 + np.array([0, 255, 0]) * 0.5).astype(np.uint8)
         cv2.circle(overlay, tuple(point), 6, (0, 0, 255), -1)
-        cv2.putText(overlay, label, (point[0]+8, point[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
+        cv2.putText(
+            overlay, label, (point[0] + 8, point[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2
+        )
         out_path = Path(__file__).parent / f"sam2_{label}.png"
         cv2.imwrite(str(out_path), overlay)
         print(f"{label}: mask saved to {out_path}")

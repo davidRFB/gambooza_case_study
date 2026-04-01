@@ -4,24 +4,26 @@ SAM3 video tracking of beer tap handles.
 - SAM3 propagates masks across all frames using its memory bank
 - Extracts centroid per frame to detect ON/OFF transitions
 """
-from ultralytics.models.sam import SAM3VideoPredictor
+
 from pathlib import Path
+
 import cv2
-import numpy as np
 import matplotlib
+import numpy as np
+from ultralytics.models.sam import SAM3VideoPredictor
+
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 
-
 # ── Config ────────────────────────────────────────────────────────────────────
 VIDEO_PATH = Path("../../../data/videos/cerveza2.mp4")
-OUT_DIR    = Path("sam3_track_output")
+OUT_DIR = Path("sam3_track_output")
 OUT_DIR.mkdir(exist_ok=True)
 
 OBJECT_LABELS = ["TAP_A", "TAP_B"]
 COLORS = [(0, 255, 0), (0, 128, 255)]
 MAX_FRAMES = None  # process all frames
-FRAME_SKIP = 5     # process every Nth frame
+FRAME_SKIP = 5  # process every Nth frame
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Step 1 — interactive bbox selection on first frame
@@ -86,9 +88,7 @@ results = predictor(
 
 # Step 3 — process results, extract centroids, write output video
 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-out_video = cv2.VideoWriter(
-    str(OUT_DIR / "sam3_tracked.mp4"), fourcc, fps, (vid_w, vid_h)
-)
+out_video = cv2.VideoWriter(str(OUT_DIR / "sam3_tracked.mp4"), fourcc, fps, (vid_w, vid_h))
 
 centroids = {label: [] for label in OBJECT_LABELS}  # label → [(frame, cx, cy)]
 
@@ -108,9 +108,7 @@ for frame_idx, result in enumerate(results):
             label = OBJECT_LABELS[obj_idx]
 
             # color overlay
-            overlay[mask] = (
-                overlay[mask] * 0.5 + np.array(color[::-1]) * 0.5
-            ).astype(np.uint8)
+            overlay[mask] = (overlay[mask] * 0.5 + np.array(color[::-1]) * 0.5).astype(np.uint8)
 
             # centroid
             ys, xs = np.where(mask)
@@ -118,11 +116,11 @@ for frame_idx, result in enumerate(results):
                 cx, cy = int(xs.mean()), int(ys.mean())
                 centroids[label].append((frame_idx, cx, cy))
                 cv2.circle(overlay, (cx, cy), 5, color, -1)
-                cv2.putText(overlay, label, (cx + 10, cy),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                cv2.putText(overlay, label, (cx + 10, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-    cv2.putText(overlay, f"frame {frame_idx}", (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+    cv2.putText(
+        overlay, f"frame {frame_idx}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2
+    )
 
     out_video.write(overlay)
 
@@ -137,8 +135,14 @@ for label, data in centroids.items():
     if not data:
         continue
     arr = np.array(data)
-    np.savetxt(OUT_DIR / f"{label}_centroids.csv", arr,
-               delimiter=",", header="frame,cx,cy", comments="", fmt="%d")
+    np.savetxt(
+        OUT_DIR / f"{label}_centroids.csv",
+        arr,
+        delimiter=",",
+        header="frame,cx,cy",
+        comments="",
+        fmt="%d",
+    )
 
 # plot centroid Y over time (Y position reveals ON/OFF)
 fig, ax = plt.subplots(figsize=(12, 4))
