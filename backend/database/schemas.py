@@ -4,8 +4,8 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
-
 # ── Video schemas ──────────────────────────────────────────────────
+
 
 class VideoUploadResponse(BaseModel):
     id: int
@@ -58,6 +58,7 @@ class VideoStatusResponse(BaseModel):
 
 
 # ── Count schemas ──────────────────────────────────────────────────
+
 
 class CountResult(BaseModel):
     video_id: int

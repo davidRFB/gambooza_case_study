@@ -8,8 +8,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.database.models import Base
 from backend.database.connection import get_db
+from backend.database.models import Base
 from backend.main import app
 
 
@@ -73,7 +73,8 @@ def test_list_videos(client):
 def test_get_status(client):
     name, file, ct = _make_fake_mp4()
     upload = client.post(
-        "/api/videos/upload", files={"file": (name, file, ct)},
+        "/api/videos/upload",
+        files={"file": (name, file, ct)},
     ).json()
 
     resp = client.get(f"/api/videos/{upload['id']}/status")
@@ -94,7 +95,8 @@ def test_get_status_not_found(client):
 def test_process_returns_202(client):
     name, file, ct = _make_fake_mp4()
     upload = client.post(
-        "/api/videos/upload", files={"file": (name, file, ct)},
+        "/api/videos/upload",
+        files={"file": (name, file, ct)},
     ).json()
 
     resp = client.post(f"/api/videos/{upload['id']}/process")
@@ -111,7 +113,8 @@ def test_process_not_found(client):
 def test_delete_video(client):
     name, file, ct = _make_fake_mp4()
     upload = client.post(
-        "/api/videos/upload", files={"file": (name, file, ct)},
+        "/api/videos/upload",
+        files={"file": (name, file, ct)},
     ).json()
 
     resp = client.delete(f"/api/videos/{upload['id']}")

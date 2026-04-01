@@ -9,8 +9,9 @@ from pathlib import Path
 import yaml
 from sqlalchemy.orm import Session
 
-from backend.config import UPLOADS_DIR, ROI_CONFIGS_DIR, YOLO_BASE_CONFIG, RESULTS_DIR, PROJECT_ROOT
-from backend.database.models import Video, TapEvent as TapEventModel
+from backend.config import PROJECT_ROOT, RESULTS_DIR, ROI_CONFIGS_DIR, UPLOADS_DIR, YOLO_BASE_CONFIG
+from backend.database.models import TapEvent as TapEventModel
+from backend.database.models import Video
 
 logger = logging.getLogger(__name__)
 
@@ -106,14 +107,22 @@ def _run_yolo_pipeline(video_path: Path, video_id: int, roi: dict) -> list[dict]
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     tap_roi_json = output_path / "tap_roi.json"
-    tap_roi_json.write_text(json.dumps({
-        "tap_roi": yolo_roi["tap_roi"],
-        "sam3_tap_bboxes": yolo_roi["sam3_tap_bboxes"],
-    }, indent=2))
+    tap_roi_json.write_text(
+        json.dumps(
+            {
+                "tap_roi": yolo_roi["tap_roi"],
+                "sam3_tap_bboxes": yolo_roi["sam3_tap_bboxes"],
+            },
+            indent=2,
+        )
+    )
 
     # Write temp config
     tmp = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".yaml", prefix="pipeline_web_", delete=False,
+        mode="w",
+        suffix=".yaml",
+        prefix="pipeline_web_",
+        delete=False,
     )
     yaml.dump(cfg, tmp)
     tmp.close()
@@ -130,6 +139,7 @@ def _run_yolo_pipeline(video_path: Path, video_id: int, roi: dict) -> list[dict]
 def _import_yolo_detector():
     """Lazy import — avoids loading heavy ML deps at module level."""
     from backend.ml.approach_yolo.detector import YOLODetector
+
     return YOLODetector
 
 
@@ -150,16 +160,18 @@ def _map_pour_events(video_id: int, pour_events: list[dict]) -> list[TapEventMod
         if tap is None:
             continue  # skip UNKNOWN or unassigned
 
-        rows.append(TapEventModel(
-            video_id=video_id,
-            tap=tap,
-            frame_start=pe["frame_start"],
-            frame_end=pe["frame_end"],
-            timestamp_start=pe["time_start"],
-            timestamp_end=pe["time_end"],
-            confidence=None,
-            count=1,
-        ))
+        rows.append(
+            TapEventModel(
+                video_id=video_id,
+                tap=tap,
+                frame_start=pe["frame_start"],
+                frame_end=pe["frame_end"],
+                timestamp_start=pe["time_start"],
+                timestamp_end=pe["time_end"],
+                confidence=None,
+                count=1,
+            )
+        )
 
     return rows
 

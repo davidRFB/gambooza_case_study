@@ -1,18 +1,19 @@
 # %% Imports
 import json
-import cv2
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 from pathlib import Path
+
+import cv2
+import matplotlib.patches as patches
+import matplotlib.pyplot as plt
+import numpy as np
 
 # %% Parameters
 PARAMS = dict(
-    video_path      = "../data/videos/cerveza2.mp4",
-    output_dir      = "../data/explore_tabs_output",
-    sample_rate     = 3,        # process every Nth frame
-    blur_kernel     = 21,       # Gaussian blur kernel size
-    diff_threshold  = 25,       # pixel intensity change threshold
+    video_path="../data/videos/cerveza2.mp4",
+    output_dir="../data/explore_tabs_output",
+    sample_rate=3,  # process every Nth frame
+    blur_kernel=21,  # Gaussian blur kernel size
+    diff_threshold=25,  # pixel intensity change threshold
 )
 
 video_path = Path(PARAMS["video_path"])
@@ -90,9 +91,15 @@ else:
                 p1 = clicks[roi_idx * 2]
                 p2 = clicks[roi_idx * 2 + 1]
                 cv2.rectangle(roi_frame, p1, p2, color, 2)
-                cv2.putText(roi_frame, ROI_LABELS[roi_idx],
-                            (p1[0], p1[1] - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                cv2.putText(
+                    roi_frame,
+                    ROI_LABELS[roi_idx],
+                    (p1[0], p1[1] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    color,
+                    2,
+                )
         cv2.imshow("Select 2 ROIs (liquid flow)", roi_frame)
 
     cv2.imshow("Select 2 ROIs (liquid flow)", roi_frame)
@@ -100,11 +107,11 @@ else:
 
     while True:
         key = cv2.waitKey(0) & 0xFF
-        if key == ord('r'):
+        if key == ord("r"):
             clicks.clear()
             roi_frame[:] = clone
             cv2.imshow("Select 2 ROIs (liquid flow)", roi_frame)
-        elif key == ord('q'):
+        elif key == ord("q"):
             break
 
     cv2.destroyAllWindows()
@@ -115,8 +122,10 @@ else:
             p1 = clicks[i * 2]
             p2 = clicks[i * 2 + 1]
             ROIS[label] = (
-                round(p1[0] / vid_w, 4), round(p1[1] / vid_h, 4),
-                round(p2[0] / vid_w, 4), round(p2[1] / vid_h, 4),
+                round(p1[0] / vid_w, 4),
+                round(p1[1] / vid_h, 4),
+                round(p2[0] / vid_w, 4),
+                round(p2[1] / vid_h, 4),
             )
         roi_data = {"rois": {k: list(v) for k, v in ROIS.items()}, "video": video_path.name}
         ROI_PATH.write_text(json.dumps(roi_data, indent=2))
@@ -134,15 +143,24 @@ vis_rgb = cv2.cvtColor(vis_frame, cv2.COLOR_BGR2RGB)
 
 
 def roi_to_px(roi, w, h):
-    return int(roi[0]*w), int(roi[1]*h), int(roi[2]*w), int(roi[3]*h)
+    return int(roi[0] * w), int(roi[1] * h), int(roi[2] * w), int(roi[3] * h)
 
 
 fig, ax = plt.subplots(1, 1, figsize=(12, 7))
 ax.imshow(vis_rgb)
 for label, color in zip(ROI_LABELS, ROI_COLORS_MPL):
     r = roi_to_px(ROIS[label], vid_w, vid_h)
-    ax.add_patch(patches.Rectangle((r[0], r[1]), r[2]-r[0], r[3]-r[1],
-                 linewidth=2, edgecolor=color, facecolor='none', label=label))
+    ax.add_patch(
+        patches.Rectangle(
+            (r[0], r[1]),
+            r[2] - r[0],
+            r[3] - r[1],
+            linewidth=2,
+            edgecolor=color,
+            facecolor="none",
+            label=label,
+        )
+    )
 ax.legend(loc="upper right")
 ax.set_title("Liquid flow ROIs on first frame")
 ax.axis("off")
@@ -154,7 +172,7 @@ plt.show()
 fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 for ax_i, label, color in zip(axes, ROI_LABELS, ROI_COLORS_MPL):
     r = roi_to_px(ROIS[label], vid_w, vid_h)
-    crop = vis_rgb[r[1]:r[3], r[0]:r[2]]
+    crop = vis_rgb[r[1] : r[3], r[0] : r[2]]
     ax_i.imshow(crop)
     ax_i.set_title(label, color=color)
     ax_i.axis("off")

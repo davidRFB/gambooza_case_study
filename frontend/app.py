@@ -1,8 +1,12 @@
 import pandas as pd
 import streamlit as st
 from utils.api_client import (
-    list_videos, get_counts_summary, upload_video,
-    process_video, get_video_status, delete_video,
+    delete_video,
+    get_counts_summary,
+    get_video_status,
+    list_videos,
+    process_video,
+    upload_video,
 )
 
 st.set_page_config(page_title="Beer Tap Counter", layout="wide")
@@ -17,7 +21,12 @@ with tab_upload:
     if recent:
         st.caption("Recent videos")
         for v in recent:
-            status_icon = {"completed": "✅", "processing": "⏳", "pending": "⬚", "error": "❌"}.get(v["status"], "")
+            status_icon = {
+                "completed": "✅",
+                "processing": "⏳",
+                "pending": "⬚",
+                "error": "❌",
+            }.get(v["status"], "")
             st.text(f"{status_icon} {v['original_name']} — {v['status']}")
         st.divider()
 
@@ -35,7 +44,9 @@ with tab_upload:
             # Auto-trigger processing only if nothing else is running
             any_processing = any(v["status"] == "processing" for v in list_videos())
             if any_processing:
-                st.toast(f"Uploaded: {result['original_name']} — queued (another video is processing)")
+                st.toast(
+                    f"Uploaded: {result['original_name']} — queued (another video is processing)"
+                )
             else:
                 process_video(result["id"])
                 st.toast(f"Uploaded & processing: {result['original_name']}")
@@ -49,7 +60,9 @@ with tab_upload:
         if status["status"] == "pending":
             any_processing = any(v["status"] == "processing" for v in list_videos())
             if any_processing:
-                st.warning(f"Queued: {status['original_name']} — waiting for another video to finish")
+                st.warning(
+                    f"Queued: {status['original_name']} — waiting for another video to finish"
+                )
                 if st.button("Refresh Status"):
                     st.rerun()
             else:

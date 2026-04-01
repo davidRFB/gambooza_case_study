@@ -34,12 +34,12 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import cv2
-
 from common import (
-    resolve_roi, load_roi_config,
-    crop_normalized, select_tap_bboxes_interactive,
+    crop_normalized,
+    load_roi_config,
+    resolve_roi,
+    select_tap_bboxes_interactive,
 )
-
 
 STAGES = ["roi_selection", "yolo_tracking", "relink", "sam3_tap_tracking"]
 
@@ -63,6 +63,7 @@ def load_config(config_path: Path) -> dict:
 
 
 # ── Stage 1+2: ROI Selection ─────────────────────────────────────────────────
+
 
 def stage_roi_selection(cfg: dict, interactive: bool = False, force: bool = False):
     """Resolve crop ROI and SAM3 tap bboxes. Saves to tap_roi.json.
@@ -162,9 +163,11 @@ def stage_roi_selection(cfg: dict, interactive: bool = False, force: bool = Fals
 
 # ── Stage 3a: YOLO Tracking ──────────────────────────────────────────────────
 
+
 def stage_yolo_tracking(cfg: dict, force: bool = False):
     """Run YOLO-World tracking on the cropped video."""
     from importlib import import_module
+
     yolo_track = import_module("03_YOLO_track")
 
     video_path = Path(cfg["video_path"])
@@ -198,9 +201,11 @@ def stage_yolo_tracking(cfg: dict, force: bool = False):
 
 # ── Stage 3b: Relink ─────────────────────────────────────────────────────────
 
+
 def stage_relink(cfg: dict, force: bool = False):
     """Relink fragmented cup tracks and classify pour events."""
     from importlib import import_module
+
     relink_mod = import_module("05_relink_coexistence")
 
     video_path = Path(cfg["video_path"])
@@ -211,6 +216,7 @@ def stage_relink(cfg: dict, force: bool = False):
     pour_json = output_dir / "pour_events.json"
     if relinked_csv.exists() and pour_json.exists() and not force:
         import json
+
         print(f"relinked_detections.csv already exists at {relinked_csv}, skipping.")
         cfg["_pour_events"] = json.loads(pour_json.read_text())
         return
@@ -241,6 +247,7 @@ def stage_relink(cfg: dict, force: bool = False):
 
 # ── Stage 4: SAM3 Tap Handle Tracking ────────────────────────────────────────
 
+
 def stage_sam3_tap_tracking(cfg: dict, interactive: bool = False, force: bool = False):
     """Run SAM3VideoPredictor on cropped video to track tap handles.
 
@@ -248,6 +255,7 @@ def stage_sam3_tap_tracking(cfg: dict, interactive: bool = False, force: bool = 
     output video only covers the movement periods, matching the YOLO video.
     """
     import json as _json
+
     from sam3_tracking import run_sam3_video_tracking
 
     video_path = Path(cfg["video_path"])
@@ -310,6 +318,7 @@ def stage_sam3_tap_tracking(cfg: dict, interactive: bool = False, force: bool = 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _get_roi(cfg: dict) -> tuple[tuple, tuple | None]:
     """Get resolved ROI from in-memory config or tap_roi.json."""
     if "_tap_roi" in cfg:
@@ -319,7 +328,7 @@ def _get_roi(cfg: dict) -> tuple[tuple, tuple | None]:
     roi_json = output_dir / "tap_roi.json"
     data = load_roi_config(roi_json)
     if "tap_roi" not in data:
-        print(f"ERROR: No ROI found. Run roi_selection stage first.")
+        print("ERROR: No ROI found. Run roi_selection stage first.")
         sys.exit(1)
     tap_roi = tuple(data["tap_roi"])
     tap_divider = tuple(data["tap_divider"]) if "tap_divider" in data else None
@@ -329,6 +338,7 @@ def _get_roi(cfg: dict) -> tuple[tuple, tuple | None]:
 
 
 # ── Tap Assignment ────────────────────────────────────────────────────────────
+
 
 def _assign_pours_to_taps(pour_json: Path, centroids_csv: Path) -> list[dict] | None:
     """Assign each pour event to TAP_A or TAP_B based on SAM3 centroid movement.
@@ -376,11 +386,13 @@ def _assign_pours_to_taps(pour_json: Path, centroids_csv: Path) -> list[dict] | 
         else:
             tap = "UNKNOWN"
 
-        assigned.append({
-            **p,
-            "tap": tap,
-            "tap_movement": movements,
-        })
+        assigned.append(
+            {
+                **p,
+                "tap": tap,
+                "tap_movement": movements,
+            }
+        )
 
     return assigned
 
@@ -400,14 +412,14 @@ def main():
         description="Unified beer tap counting pipeline.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--config", required=True, type=Path,
-                   help="Path to pipeline.yaml config file.")
-    p.add_argument("--stage", choices=STAGES,
-                   help="Run only this stage.")
-    p.add_argument("--interactive", action="store_true",
-                   help="Force interactive ROI/bbox selection.")
-    p.add_argument("--force", action="store_true",
-                   help="Re-run stages even if outputs already exist.")
+    p.add_argument("--config", required=True, type=Path, help="Path to pipeline.yaml config file.")
+    p.add_argument("--stage", choices=STAGES, help="Run only this stage.")
+    p.add_argument(
+        "--interactive", action="store_true", help="Force interactive ROI/bbox selection."
+    )
+    p.add_argument(
+        "--force", action="store_true", help="Re-run stages even if outputs already exist."
+    )
     args = p.parse_args()
 
     cfg = load_config(args.config)
@@ -430,8 +442,10 @@ def main():
 
     print(f"\n{'=' * 60}")
     print(f"  VIDEO: {video_path.name}")
-    print(f"  {video_fps:.0f} fps | {video_total_frames} frames | "
-          f"{video_duration:.1f}s ({video_duration/60:.1f} min)")
+    print(
+        f"  {video_fps:.0f} fps | {video_total_frames} frames | "
+        f"{video_duration:.1f}s ({video_duration / 60:.1f} min)"
+    )
     print(f"{'=' * 60}")
 
     stages_enabled = cfg.get("stages", {})
@@ -466,12 +480,11 @@ def main():
     total_elapsed = time.time() - pipeline_t0
 
     print(f"\n{'=' * 60}")
-    print(f"  PIPELINE COMPLETE")
+    print("  PIPELINE COMPLETE")
     print(f"  Outputs in: {cfg['output_dir']}")
     print(f"{'=' * 60}")
-    print(f"\n  Video: {video_path.name} "
-          f"({video_duration:.1f}s / {video_duration/60:.1f} min)")
-    print(f"  Stage timings:")
+    print(f"\n  Video: {video_path.name} ({video_duration:.1f}s / {video_duration / 60:.1f} min)")
+    print("  Stage timings:")
     for name, elapsed in stage_times.items():
         print(f"    {name:25s} {elapsed:8.1f}s")
     print(f"    {'─' * 35}")
@@ -525,7 +538,7 @@ def main():
         enriched_path.write_text(json.dumps(assigned_pours, indent=2))
 
         print(f"\n{'=' * 60}")
-        print(f"  FINAL RESULTS")
+        print("  FINAL RESULTS")
         print(f"{'=' * 60}")
         print(f"    TAP A:   {tap_a} beer(s)")
         print(f"    TAP B:   {tap_b} beer(s)")

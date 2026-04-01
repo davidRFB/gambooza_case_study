@@ -1,22 +1,23 @@
 # %% Imports
 import json
-import cv2
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 from pathlib import Path
+
+import cv2
+import matplotlib.patches as patches
+import matplotlib.pyplot as plt
+import numpy as np
 
 # %% Parameters — edit these defaults or override when running
 PARAMS = dict(
-    video_path      = "../data/videos/ChartterTablas_All.mp4",
-    output_dir      = "../data/explore_output",
-    sample_rate     = 35,        # process every Nth frame
-    blur_kernel     = 21,       # Gaussian blur kernel size
-    diff_threshold  = 25,       # pixel intensity change threshold
-    process_scale   = None,     # optional downscale for processing (e.g. 0.5); None = full res
-    sample_count    = 10,       # number of frames to sample for overview
-    activity_cutoff = 75,       # percentile cutoff to highlight high-activity regions
-    n_workers       = 4,        # parallel workers for video processing
+    video_path="../data/videos/ChartterTablas_All.mp4",
+    output_dir="../data/explore_output",
+    sample_rate=35,  # process every Nth frame
+    blur_kernel=21,  # Gaussian blur kernel size
+    diff_threshold=25,  # pixel intensity change threshold
+    process_scale=None,  # optional downscale for processing (e.g. 0.5); None = full res
+    sample_count=10,  # number of frames to sample for overview
+    activity_cutoff=75,  # percentile cutoff to highlight high-activity regions
+    n_workers=4,  # parallel workers for video processing
 )
 
 video_path = Path(PARAMS["video_path"])
@@ -50,7 +51,7 @@ plt.imshow(frame_rgb)
 plt.title("First frame — use next cell to define the taps ROI")
 plt.axis("off")
 plt.tight_layout()
-#plt.show()
+# plt.show()
 
 # %% Sample frames evenly across the video
 cap = cv2.VideoCapture(str(video_path))
@@ -65,13 +66,13 @@ for i, fidx in enumerate(sample_frames):
     if ret:
         axes[i].imshow(cv2.cvtColor(f, cv2.COLOR_BGR2RGB))
         pct = int(i / (PARAMS["sample_count"] - 1) * 100)
-        axes[i].set_title(f"{pct}%  ({fidx/fps:.1f}s)")
+        axes[i].set_title(f"{pct}%  ({fidx / fps:.1f}s)")
     axes[i].axis("off")
 
 cap.release()
 plt.tight_layout()
 plt.savefig(OUTPUT_DIR / "sample_frames.png", dpi=150, bbox_inches="tight")
-#plt.show()
+# plt.show()
 
 # ============================================================
 # STEP 1 — Select a single ROI that covers both taps
@@ -82,7 +83,7 @@ plt.savefig(OUTPUT_DIR / "sample_frames.png", dpi=150, bbox_inches="tight")
 # If roi.json already exists, this cell loads it and skips the selector.
 
 overwrite_roi = True
-if ROI_PATH.exists() and not overwrite_roi :
+if ROI_PATH.exists() and not overwrite_roi:
     roi_data = json.loads(ROI_PATH.read_text())
     TAPS_ROI = tuple(roi_data["taps_roi"])
     print(f"Loaded ROI from {ROI_PATH}: {TAPS_ROI}")
@@ -103,8 +104,15 @@ else:
         cv2.circle(roi_frame, (x, y), 5, color, -1)
         if len(clicks) == 2:
             cv2.rectangle(roi_frame, clicks[0], clicks[1], color, 2)
-            cv2.putText(roi_frame, "Taps ROI", (clicks[0][0], clicks[0][1] - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            cv2.putText(
+                roi_frame,
+                "Taps ROI",
+                (clicks[0][0], clicks[0][1] - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                color,
+                2,
+            )
         cv2.imshow("Select Taps ROI", roi_frame)
 
     cv2.imshow("Select Taps ROI", roi_frame)
@@ -112,20 +120,25 @@ else:
 
     while True:
         key = cv2.waitKey(0) & 0xFF
-        if key == ord('r'):
+        if key == ord("r"):
             clicks.clear()
             roi_frame[:] = clone
             cv2.imshow("Select Taps ROI", roi_frame)
-        elif key == ord('q'):
+        elif key == ord("q"):
             break
 
     cv2.destroyAllWindows()
 
     if len(clicks) >= 2:
-        TAPS_ROI = tuple(round(v, 4) for v in (
-            clicks[0][0] / vid_w, clicks[0][1] / vid_h,
-            clicks[1][0] / vid_w, clicks[1][1] / vid_h,
-        ))
+        TAPS_ROI = tuple(
+            round(v, 4)
+            for v in (
+                clicks[0][0] / vid_w,
+                clicks[0][1] / vid_h,
+                clicks[1][0] / vid_w,
+                clicks[1][1] / vid_h,
+            )
+        )
         roi_data = {"taps_roi": list(TAPS_ROI), "video": video_path.name}
         ROI_PATH.write_text(json.dumps(roi_data, indent=2))
         print(f"ROI saved to {ROI_PATH}: {TAPS_ROI}")
@@ -138,15 +151,26 @@ ret, vis_frame = cap.read()
 cap.release()
 vis_rgb = cv2.cvtColor(vis_frame, cv2.COLOR_BGR2RGB)
 
+
 def roi_to_px(roi, w, h):
-    return int(roi[0]*w), int(roi[1]*h), int(roi[2]*w), int(roi[3]*h)
+    return int(roi[0] * w), int(roi[1] * h), int(roi[2] * w), int(roi[3] * h)
+
 
 rx1, ry1, rx2, ry2 = roi_to_px(TAPS_ROI, vid_w, vid_h)
 
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
 ax1.imshow(vis_rgb)
-ax1.add_patch(patches.Rectangle((rx1, ry1), rx2 - rx1, ry2 - ry1,
-              linewidth=2, edgecolor='lime', facecolor='none', label='Taps ROI'))
+ax1.add_patch(
+    patches.Rectangle(
+        (rx1, ry1),
+        rx2 - rx1,
+        ry2 - ry1,
+        linewidth=2,
+        edgecolor="lime",
+        facecolor="none",
+        label="Taps ROI",
+    )
+)
 ax1.legend()
 ax1.set_title("Full frame with ROI")
 ax1.axis("off")
@@ -244,13 +268,23 @@ for i in range(n_workers):
     end = (i + 1) * chunk_size if i < n_workers - 1 else total_frames
     # Overlap by 1 sampled frame so each chunk has a valid prev_crop at its boundary
     overlap_start = max(0, start - sample_rate) if i > 0 else start
-    chunks.append((
-        str(video_path), overlap_start, end, sample_rate, diff_thresh,
-        blur_k, (ry1, ry2, rx1, rx2), process_scale,
-    ))
+    chunks.append(
+        (
+            str(video_path),
+            overlap_start,
+            end,
+            sample_rate,
+            diff_thresh,
+            blur_k,
+            (ry1, ry2, rx1, rx2),
+            process_scale,
+        )
+    )
 
-print(f"Processing {total_frames} frames with {n_workers} workers "
-      f"(sample_rate={sample_rate}, ~{total_frames // sample_rate} sampled frames)...")
+print(
+    f"Processing {total_frames} frames with {n_workers} workers "
+    f"(sample_rate={sample_rate}, ~{total_frames // sample_rate} sampled frames)..."
+)
 t0 = time.time()
 
 with mp.Pool(n_workers) as pool:
@@ -266,8 +300,10 @@ for local_sum, local_count, local_diffs in results:
     frame_diffs.extend(local_diffs)
 
 elapsed = time.time() - t0
-print(f"Processed {total_count} frame pairs in {elapsed:.1f}s "
-      f"({total_count / max(elapsed, 1):.0f} pairs/s)")
+print(
+    f"Processed {total_count} frame pairs in {elapsed:.1f}s "
+    f"({total_count / max(elapsed, 1):.0f} pairs/s)"
+)
 
 # Normalize: fraction of frames each pixel was active
 motion_heatmap = motion_sum / max(total_count, 1)
@@ -303,10 +339,14 @@ plt.show()
 # %% Histogram of per-pixel activity
 fig, ax = plt.subplots(figsize=(10, 4))
 ax.hist(nonzero, bins=100, color="steelblue", edgecolor="none", log=True)
-ax.axvline(cutoff, color="red", linestyle="--", linewidth=2,
-           label=f"P{PARAMS['activity_cutoff']} cutoff = {cutoff:.4f}")
-ax.axvline(np.mean(nonzero), color="orange", linestyle="--",
-           label=f"mean = {np.mean(nonzero):.4f}")
+ax.axvline(
+    cutoff,
+    color="red",
+    linestyle="--",
+    linewidth=2,
+    label=f"P{PARAMS['activity_cutoff']} cutoff = {cutoff:.4f}",
+)
+ax.axvline(np.mean(nonzero), color="orange", linestyle="--", label=f"mean = {np.mean(nonzero):.4f}")
 ax.set_xlabel("Activity fraction (non-zero pixels only)")
 ax.set_ylabel("Pixel count (log)")
 ax.set_title("Distribution of per-pixel activity")
@@ -319,7 +359,7 @@ plt.show()
 on_mask = motion_heatmap_vis >= cutoff
 np.save(OUTPUT_DIR / "on_mask.npy", on_mask)
 print(f"Cutoff (P{PARAMS['activity_cutoff']}): {cutoff:.4f}")
-print(f"High-activity pixels: {on_mask.sum():,} ({on_mask.mean()*100:.1f}%)")
+print(f"High-activity pixels: {on_mask.sum():,} ({on_mask.mean() * 100:.1f}%)")
 print(f"Results saved to {OUTPUT_DIR.resolve()}")
 
 # %%

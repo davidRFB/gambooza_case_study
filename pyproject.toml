@@ -1,0 +1,57 @@
+[project]
+name = "gambooza-case-study"
+version = "0.1.0"
+description = "Beer Tap Counter — counts beers served from video footage using YOLO + SAM3"
+requires-python = ">=3.11"
+dependencies = [
+    "opencv-python",
+    "numpy",
+    "matplotlib",
+    "pandas",
+    "ultralytics",
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlalchemy",
+    "aiofiles",
+    "python-multipart",
+    "pyyaml",
+    "streamlit",
+    "requests",
+]
+
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["notebooks/"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/ml/common.py" = ["F841"]  # selector vars needed by matplotlib
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "ruff",
+    "pre-commit",
+    "httpx",
+    "ipython",
+    "ipykernel",
+]

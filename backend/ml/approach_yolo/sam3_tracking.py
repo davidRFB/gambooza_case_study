@@ -23,7 +23,9 @@ import numpy as np
 import pandas as pd
 
 from backend.ml.common import (
-    crop_normalized, export_cropped_video, savefig,
+    crop_normalized,
+    export_cropped_video,
+    savefig,
     select_tap_bboxes_interactive,
 )
 
@@ -33,6 +35,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Core SAM3 tracking function
 # ---------------------------------------------------------------------------
+
 
 def run_sam3_video_tracking(
     video_path: Path,
@@ -101,8 +104,11 @@ def run_sam3_video_tracking(
         for rng_start, rng_end in frame_ranges:
             video_frame_set.update(range(rng_start, rng_end + 1))
         logger.info("Cropped video: %dx%d, %d frames, %.1f fps", vid_w, vid_h, total_frames, fps)
-        logger.info("  frame_ranges: %d segment(s), %d frames for output video",
-                    len(frame_ranges), len(video_frame_set))
+        logger.info(
+            "  frame_ranges: %d segment(s), %d frames for output video",
+            len(frame_ranges),
+            len(video_frame_set),
+        )
     else:
         logger.info("Cropped video: %dx%d, %d frames, %.1f fps", vid_w, vid_h, total_frames, fps)
 
@@ -130,9 +136,7 @@ def run_sam3_video_tracking(
     # -- Process results: extract centroids, write output video -------------
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     out_video_path = output_dir / "sam3_tracked.mp4"
-    out_video = cv2.VideoWriter(
-        str(out_video_path), fourcc, fps, (vid_w, vid_h)
-    )
+    out_video = cv2.VideoWriter(str(out_video_path), fourcc, fps, (vid_w, vid_h))
 
     centroids = {label: [] for label in object_labels}
     frames_dir = output_dir / "sam3_frames"
@@ -156,23 +160,29 @@ def run_sam3_video_tracking(
                 color = colors[obj_idx % len(colors)]
                 label = object_labels[obj_idx]
 
-                overlay[mask] = (
-                    overlay[mask] * 0.5 + np.array(color[::-1]) * 0.5
-                ).astype(np.uint8)
+                overlay[mask] = (overlay[mask] * 0.5 + np.array(color[::-1]) * 0.5).astype(np.uint8)
 
                 ys, xs = np.where(mask)
                 if len(xs):
                     cx, cy = int(xs.mean()), int(ys.mean())
                     centroids[label].append((frame_idx, cx, cy))
                     cv2.circle(overlay, (cx, cy), 5, color, -1)
-                    cv2.putText(overlay, label, (cx + 10, cy),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                    cv2.putText(
+                        overlay, label, (cx + 10, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2
+                    )
 
-        cv2.putText(overlay, f"frame {frame_idx}", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.putText(
+            overlay,
+            f"frame {frame_idx}",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (255, 255, 255),
+            2,
+        )
 
         # Write to video only if frame is in the desired ranges (or all frames)
-        write_frame = (video_frame_set is None or frame_idx in video_frame_set)
+        write_frame = video_frame_set is None or frame_idx in video_frame_set
         if write_frame:
             out_video.write(overlay)
 
@@ -188,13 +198,15 @@ def run_sam3_video_tracking(
     all_rows = []
     for label, data in centroids.items():
         for frame_idx, cx, cy in data:
-            all_rows.append({
-                "frame": frame_idx,
-                "time_s": frame_idx / fps,
-                "label": label,
-                "centroid_x": cx,
-                "centroid_y": cy,
-            })
+            all_rows.append(
+                {
+                    "frame": frame_idx,
+                    "time_s": frame_idx / fps,
+                    "label": label,
+                    "centroid_x": cx,
+                    "centroid_y": cy,
+                }
+            )
 
     csv_path = output_dir / "sam3_centroids.csv"
     if all_rows:
@@ -204,15 +216,22 @@ def run_sam3_video_tracking(
     else:
         logger.warning("No centroids detected.")
         pd.DataFrame(columns=["frame", "time_s", "label", "centroid_x", "centroid_y"]).to_csv(
-            csv_path, index=False)
+            csv_path, index=False
+        )
 
     # Also save per-label CSVs for compatibility
     for label, data in centroids.items():
         if not data:
             continue
         arr = np.array(data)
-        np.savetxt(output_dir / f"{label}_centroids.csv", arr,
-                   delimiter=",", header="frame,cx,cy", comments="", fmt="%d")
+        np.savetxt(
+            output_dir / f"{label}_centroids.csv",
+            arr,
+            delimiter=",",
+            header="frame,cx,cy",
+            comments="",
+            fmt="%d",
+        )
 
     # -- Plot centroid Y over time ------------------------------------------
     import matplotlib.pyplot as plt
@@ -237,6 +256,7 @@ def run_sam3_video_tracking(
 # Standalone CLI
 # ---------------------------------------------------------------------------
 
+
 def main():
     import yaml
 
@@ -244,10 +264,8 @@ def main():
         description="SAM3 tap handle tracking (standalone or via pipeline).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--config", required=True, type=Path,
-                   help="Path to pipeline.yaml config file.")
-    p.add_argument("--interactive", action="store_true",
-                   help="Force interactive bbox selection.")
+    p.add_argument("--config", required=True, type=Path, help="Path to pipeline.yaml config file.")
+    p.add_argument("--interactive", action="store_true", help="Force interactive bbox selection.")
     args = p.parse_args()
 
     with open(args.config) as f:

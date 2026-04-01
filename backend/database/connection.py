@@ -5,7 +5,6 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.config import DATABASE_URL, DB_DIR
 
-
 engine = create_engine(
     DATABASE_URL,
     connect_args={"check_same_thread": False},  # required for SQLite + threads
@@ -18,6 +17,7 @@ def init_db():
     """Create the data/db/ directory and all tables."""
     DB_DIR.mkdir(parents=True, exist_ok=True)
     from backend.database.models import Base
+
     Base.metadata.create_all(bind=engine)
 
 

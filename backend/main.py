@@ -7,8 +7,8 @@ from fastapi import FastAPI
 
 from backend.database.connection import init_db
 from backend.logging_config import setup_logging
-from backend.routers.videos import router as videos_router
 from backend.routers.counts import router as counts_router
+from backend.routers.videos import router as videos_router
 
 logger = logging.getLogger(__name__)
 

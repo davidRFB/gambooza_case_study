@@ -6,8 +6,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.database.models import Base, Video, TapEvent
 from backend.database.connection import get_db
+from backend.database.models import Base, TapEvent, Video
 from backend.main import app
 
 
@@ -27,14 +27,37 @@ def client():
     v = Video(filename="test.mp4", original_name="test.mp4", status="completed")
     db.add(v)
     db.commit()
-    db.add_all([
-        TapEvent(video_id=v.id, tap="A", frame_start=0, frame_end=100,
-                 timestamp_start=0.0, timestamp_end=5.0, count=1),
-        TapEvent(video_id=v.id, tap="A", frame_start=200, frame_end=300,
-                 timestamp_start=10.0, timestamp_end=15.0, count=1),
-        TapEvent(video_id=v.id, tap="B", frame_start=400, frame_end=500,
-                 timestamp_start=20.0, timestamp_end=25.0, count=2),
-    ])
+    db.add_all(
+        [
+            TapEvent(
+                video_id=v.id,
+                tap="A",
+                frame_start=0,
+                frame_end=100,
+                timestamp_start=0.0,
+                timestamp_end=5.0,
+                count=1,
+            ),
+            TapEvent(
+                video_id=v.id,
+                tap="A",
+                frame_start=200,
+                frame_end=300,
+                timestamp_start=10.0,
+                timestamp_end=15.0,
+                count=1,
+            ),
+            TapEvent(
+                video_id=v.id,
+                tap="B",
+                frame_start=400,
+                frame_end=500,
+                timestamp_start=20.0,
+                timestamp_end=25.0,
+                count=2,
+            ),
+        ]
+    )
     db.commit()
     db.close()
 
@@ -56,8 +79,8 @@ def test_get_counts(client):
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 1
-    assert data[0]["tap_a"] == 2   # two events, count=1 each
-    assert data[0]["tap_b"] == 2   # one event, count=2
+    assert data[0]["tap_a"] == 2  # two events, count=1 each
+    assert data[0]["tap_b"] == 2  # one event, count=2
     assert data[0]["total"] == 4
 
 

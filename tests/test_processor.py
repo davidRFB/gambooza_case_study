@@ -2,13 +2,13 @@
 
 import json
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
 
-from backend.services.processor import _load_roi_config, _run_yolo_pipeline, _map_pour_events
-from backend.config import ROI_CONFIGS_DIR, YOLO_BASE_CONFIG, RESULTS_DIR
+from backend.config import RESULTS_DIR, ROI_CONFIGS_DIR
+from backend.services.processor import _load_roi_config, _map_pour_events, _run_yolo_pipeline
 
 
 def test_load_default_roi():
@@ -71,10 +71,22 @@ def test_run_yolo_pipeline_builds_correct_config():
 
 def test_map_pour_events_tap_a_and_b():
     events = [
-        {"cup_id": 1, "frame_start": 0, "frame_end": 100,
-         "time_start": 0.0, "time_end": 5.0, "tap": "TAP_A"},
-        {"cup_id": 2, "frame_start": 200, "frame_end": 350,
-         "time_start": 10.0, "time_end": 17.5, "tap": "TAP_B"},
+        {
+            "cup_id": 1,
+            "frame_start": 0,
+            "frame_end": 100,
+            "time_start": 0.0,
+            "time_end": 5.0,
+            "tap": "TAP_A",
+        },
+        {
+            "cup_id": 2,
+            "frame_start": 200,
+            "frame_end": 350,
+            "time_start": 10.0,
+            "time_end": 17.5,
+            "tap": "TAP_B",
+        },
     ]
     rows = _map_pour_events(video_id=1, pour_events=events)
     assert len(rows) == 2
@@ -87,12 +99,29 @@ def test_map_pour_events_tap_a_and_b():
 
 def test_map_pour_events_skips_unknown():
     events = [
-        {"cup_id": 1, "frame_start": 0, "frame_end": 100,
-         "time_start": 0.0, "time_end": 5.0, "tap": "TAP_A"},
-        {"cup_id": 2, "frame_start": 200, "frame_end": 350,
-         "time_start": 10.0, "time_end": 17.5, "tap": "UNKNOWN"},
-        {"cup_id": 3, "frame_start": 400, "frame_end": 500,
-         "time_start": 20.0, "time_end": 25.0},  # no tap key at all
+        {
+            "cup_id": 1,
+            "frame_start": 0,
+            "frame_end": 100,
+            "time_start": 0.0,
+            "time_end": 5.0,
+            "tap": "TAP_A",
+        },
+        {
+            "cup_id": 2,
+            "frame_start": 200,
+            "frame_end": 350,
+            "time_start": 10.0,
+            "time_end": 17.5,
+            "tap": "UNKNOWN",
+        },
+        {
+            "cup_id": 3,
+            "frame_start": 400,
+            "frame_end": 500,
+            "time_start": 20.0,
+            "time_end": 25.0,
+        },  # no tap key at all
     ]
     rows = _map_pour_events(video_id=1, pour_events=events)
     assert len(rows) == 1
@@ -106,9 +135,7 @@ def test_map_pour_events_empty():
 
 def test_load_roi_missing_yolo_key():
     path = ROI_CONFIGS_DIR / "_test_bad2.json"
-    path.write_text(json.dumps({
-        "yolo": {"tap_roi": [0.1, 0.2, 0.3, 0.4]}
-    }))
+    path.write_text(json.dumps({"yolo": {"tap_roi": [0.1, 0.2, 0.3, 0.4]}}))
     try:
         with pytest.raises(ValueError, match="missing key: sam3_tap_bboxes"):
             _load_roi_config("_test_bad2")

@@ -24,18 +24,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import cv2
-import numpy as np
 
 from backend.ml.approach_simple.detector import SimpleDetector, plot_simple_results
 from backend.ml.common import select_roi_interactive
-
 
 # ---------------------------------------------------------------------------
 # ROI resolution
 # ---------------------------------------------------------------------------
 
-def load_or_select_rois(video_path: Path, roi_json: Path | None,
-                        interactive: bool) -> dict:
+
+def load_or_select_rois(video_path: Path, roi_json: Path | None, interactive: bool) -> dict:
     """Resolve tap_a_roi and tap_b_roi from file or interactive."""
     data = {}
 
@@ -53,15 +51,13 @@ def load_or_select_rois(video_path: Path, roi_json: Path | None,
         print(f"ERROR: Could not read {video_path}")
         sys.exit(1)
 
-    for key, label in [("tap_a_roi", "TAP A handle"),
-                       ("tap_b_roi", "TAP B handle")]:
+    for key, label in [("tap_a_roi", "TAP A handle"), ("tap_b_roi", "TAP B handle")]:
         if key in data and not interactive:
             print(f"  {label}: {data[key]}")
         else:
             roi = select_roi_interactive(
                 frame_0,
-                f"Drag rectangle over [{label}] (small region on the handle), "
-                f"then close window."
+                f"Drag rectangle over [{label}] (small region on the handle), then close window.",
             )
             data[key] = list(roi)
             print(f"  {label} selected: {[round(v, 4) for v in roi]}")
@@ -73,15 +69,20 @@ def load_or_select_rois(video_path: Path, roi_json: Path | None,
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     p = argparse.ArgumentParser(description="Run SimpleDetector")
     p.add_argument("--video", required=True, type=Path)
-    p.add_argument("--roi-json", type=Path, default=None,
-                   help="Path to simple_roi.json from a previous run")
-    p.add_argument("--output", type=Path, default=None,
-                   help="Output directory (default: results/simple_<video>)")
-    p.add_argument("--interactive", action="store_true",
-                   help="Force interactive ROI selection")
+    p.add_argument(
+        "--roi-json", type=Path, default=None, help="Path to simple_roi.json from a previous run"
+    )
+    p.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Output directory (default: results/simple_<video>)",
+    )
+    p.add_argument("--interactive", action="store_true", help="Force interactive ROI selection")
     p.add_argument("--sample-every", type=int, default=3)
     p.add_argument("--on-threshold", type=float, default=0.05)
     p.add_argument("--min-on-frames", type=int, default=10)
@@ -115,8 +116,10 @@ def main():
 
     # Print events
     for e in result.events:
-        print(f"  Tap {e.tap}: {e.timestamp_start:.1f}s – {e.timestamp_end:.1f}s "
-              f"({e.duration_s:.1f}s, peak={e.peak_activity:.3f})")
+        print(
+            f"  Tap {e.tap}: {e.timestamp_start:.1f}s – {e.timestamp_end:.1f}s "
+            f"({e.duration_s:.1f}s, peak={e.peak_activity:.3f})"
+        )
 
     # Save
     (out / "summary.json").write_text(json.dumps(result.to_dict(), indent=2))

@@ -6,8 +6,8 @@ from pathlib import Path
 # ── Paths ──────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
-VIDEOS_DIR = DATA_DIR / "videos"    # original test videos
-UPLOADS_DIR = DATA_DIR / "uploads"   # user-uploaded videos
+VIDEOS_DIR = DATA_DIR / "videos"  # original test videos
+UPLOADS_DIR = DATA_DIR / "uploads"  # user-uploaded videos
 DB_DIR = DATA_DIR / "db_files"
 MODELS_DIR = DATA_DIR / "models"
 ROI_CONFIGS_DIR = DATA_DIR / "roi_configs"

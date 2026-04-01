@@ -1,10 +1,15 @@
 """Tests for the frontend API client."""
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from frontend.utils.api_client import (
-    list_videos, get_counts_summary, upload_video,
-    process_video, get_video_status, delete_video, BACKEND_URL,
+    BACKEND_URL,
+    delete_video,
+    get_counts_summary,
+    get_video_status,
+    list_videos,
+    process_video,
+    upload_video,
 )
 
 
@@ -19,7 +24,13 @@ def _mock_response(json_data, status_code=200):
 @patch("frontend.utils.api_client.requests.get")
 def test_list_videos(mock_get):
     fake_data = [
-        {"id": 1, "original_name": "vid.mp4", "upload_date": "2026-04-01", "status": "completed", "ml_approach": "yolo"},
+        {
+            "id": 1,
+            "original_name": "vid.mp4",
+            "upload_date": "2026-04-01",
+            "status": "completed",
+            "ml_approach": "yolo",
+        },
     ]
     mock_get.return_value = _mock_response(fake_data)
 
@@ -54,7 +65,12 @@ def test_get_counts_summary(mock_get):
 
 @patch("frontend.utils.api_client.requests.post")
 def test_upload_video(mock_post):
-    fake_data = {"id": 1, "filename": "abc123_test.mp4", "original_name": "test.mp4", "status": "pending"}
+    fake_data = {
+        "id": 1,
+        "filename": "abc123_test.mp4",
+        "original_name": "test.mp4",
+        "status": "pending",
+    }
     mock_post.return_value = _mock_response(fake_data)
 
     result = upload_video("test.mp4", b"fake video bytes")
@@ -68,7 +84,12 @@ def test_upload_video(mock_post):
 
 @patch("frontend.utils.api_client.requests.post")
 def test_upload_video_returns_fields(mock_post):
-    fake_data = {"id": 5, "filename": "xyz_vid.mp4", "original_name": "vid.mp4", "status": "pending"}
+    fake_data = {
+        "id": 5,
+        "filename": "xyz_vid.mp4",
+        "original_name": "vid.mp4",
+        "status": "pending",
+    }
     mock_post.return_value = _mock_response(fake_data)
 
     result = upload_video("vid.mp4", b"data")
@@ -79,7 +100,9 @@ def test_upload_video_returns_fields(mock_post):
 
 @patch("frontend.utils.api_client.requests.post")
 def test_process_video_accepted(mock_post):
-    mock_post.return_value = _mock_response({"message": "Processing started", "video_id": 1}, status_code=202)
+    mock_post.return_value = _mock_response(
+        {"message": "Processing started", "video_id": 1}, status_code=202
+    )
 
     status_code = process_video(1)
 
@@ -99,11 +122,26 @@ def test_process_video_conflict(mock_post):
 @patch("frontend.utils.api_client.requests.get")
 def test_get_video_status(mock_get):
     fake_data = {
-        "id": 1, "filename": "abc.mp4", "original_name": "test.mp4",
-        "upload_date": "2026-04-01", "status": "completed",
-        "tap_a_count": 3, "tap_b_count": 2, "total": 5,
-        "events": [{"id": 1, "tap": "A", "frame_start": 100, "frame_end": 200,
-                     "timestamp_start": 3.3, "timestamp_end": 6.6, "confidence": 0.9, "count": 1}],
+        "id": 1,
+        "filename": "abc.mp4",
+        "original_name": "test.mp4",
+        "upload_date": "2026-04-01",
+        "status": "completed",
+        "tap_a_count": 3,
+        "tap_b_count": 2,
+        "total": 5,
+        "events": [
+            {
+                "id": 1,
+                "tap": "A",
+                "frame_start": 100,
+                "frame_end": 200,
+                "timestamp_start": 3.3,
+                "timestamp_end": 6.6,
+                "confidence": 0.9,
+                "count": 1,
+            }
+        ],
     }
     mock_get.return_value = _mock_response(fake_data)
 

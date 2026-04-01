@@ -9,12 +9,15 @@ Stages: ROI selection → YOLO tracking → Relink → SAM3 tap tracking → Tap
 
 import json
 import logging
-from dataclasses import dataclass, asdict
-from pathlib import Path
 import time
-import cv2
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
 from backend.ml.approach_yolo.pipeline import (
-    load_config, STAGE_FUNCS, STAGES, _assign_pours_to_taps,
+    STAGE_FUNCS,
+    STAGES,
+    _assign_pours_to_taps,
+    load_config,
 )
 
 
@@ -110,8 +113,14 @@ class YOLODetector:
         tap_a = sum(1 for p in pours if p.get("tap") == "TAP_A")
         tap_b = sum(1 for p in pours if p.get("tap") == "TAP_B")
         unknown = len(pours) - tap_a - tap_b
-        logger.info("Results: Tap A=%d, Tap B=%d, Unknown=%d, Total=%d (%.3fs)",
-                     tap_a, tap_b, unknown, len(pours), total_elapsed)
+        logger.info(
+            "Results: Tap A=%d, Tap B=%d, Unknown=%d, Total=%d (%.3fs)",
+            tap_a,
+            tap_b,
+            unknown,
+            len(pours),
+            total_elapsed,
+        )
 
         return YOLODetectorResult(
             tap_a_count=tap_a,

@@ -10,13 +10,13 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.config import UPLOADS_DIR
-from backend.database.connection import get_db, SessionLocal
-from backend.database.models import Video, TapEvent
+from backend.database.connection import SessionLocal, get_db
+from backend.database.models import TapEvent, Video
 from backend.database.schemas import (
-    VideoUploadResponse,
+    TapEventResponse,
     VideoListItem,
     VideoStatusResponse,
-    TapEventResponse,
+    VideoUploadResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -109,6 +109,7 @@ def delete_video(video_id: int, db: Session = Depends(get_db)):
 def _run_processing(video_id: int, roi_config: str):
     """Background task wrapper — creates its own DB session."""
     from backend.services.processor import process_video
+
     db = SessionLocal()
     try:
         process_video(video_id, db, roi_config=roi_config)

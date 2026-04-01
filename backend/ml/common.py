@@ -22,12 +22,11 @@ try:
 except Exception:
     pass
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
-
 
 # ---------------------------------------------------------------------------
 # Interactive selectors (matplotlib-based)
 # ---------------------------------------------------------------------------
+
 
 def select_roi_interactive(frame: np.ndarray) -> tuple:
     """Show frame in matplotlib, let the user drag a rectangle, return normalised ROI.
@@ -54,8 +53,11 @@ def select_roi_interactive(frame: np.ndarray) -> tuple:
         coords["y1"] = erelease.ydata
 
     selector = RectangleSelector(
-        ax, on_select, useblit=True,
-        button=[1], interactive=True,
+        ax,
+        on_select,
+        useblit=True,
+        button=[1],
+        interactive=True,
         props=dict(facecolor="cyan", edgecolor="red", alpha=0.3, linewidth=2),
     )
 
@@ -66,8 +68,7 @@ def select_roi_interactive(frame: np.ndarray) -> tuple:
         sys.exit(1)
 
     x0, y0, x1, y1 = coords["x0"], coords["y0"], coords["x1"], coords["y1"]
-    roi = (min(x0, x1) / w, min(y0, y1) / h,
-           max(x0, x1) / w, max(y0, y1) / h)
+    roi = (min(x0, x1) / w, min(y0, y1) / h, max(x0, x1) / w, max(y0, y1) / h)
     return roi
 
 
@@ -83,8 +84,9 @@ def select_divider_interactive(crop: np.ndarray) -> tuple:
 
     fig, ax = plt.subplots(figsize=(10, 8))
     ax.imshow(rgb)
-    ax.set_title("Click 2 points: TOP and BOTTOM of the A|B divider line\n"
-                 "(Left = Tap A, Right = Tap B)")
+    ax.set_title(
+        "Click 2 points: TOP and BOTTOM of the A|B divider line\n(Left = Tap A, Right = Tap B)"
+    )
     ax.axis("off")
     plt.tight_layout()
 
@@ -95,13 +97,20 @@ def select_divider_interactive(crop: np.ndarray) -> tuple:
         print(f"Only {len(raw)}/2 clicks recorded for divider. Run again with --interactive.")
         sys.exit(1)
 
-    ax.plot([raw[0][0], raw[1][0]], [raw[0][1], raw[1][1]],
-            "r-", linewidth=2)
+    ax.plot([raw[0][0], raw[1][0]], [raw[0][1], raw[1][1]], "r-", linewidth=2)
     mid_x = (raw[0][0] + raw[1][0]) / 2
-    ax.text(raw[0][0] * 0.3, h * 0.05, "A", fontsize=24, color="blue",
-            fontweight="bold", ha="center")
-    ax.text(mid_x + (w - mid_x) * 0.5, h * 0.05, "B", fontsize=24, color="green",
-            fontweight="bold", ha="center")
+    ax.text(
+        raw[0][0] * 0.3, h * 0.05, "A", fontsize=24, color="blue", fontweight="bold", ha="center"
+    )
+    ax.text(
+        mid_x + (w - mid_x) * 0.5,
+        h * 0.05,
+        "B",
+        fontsize=24,
+        color="green",
+        fontweight="bold",
+        ha="center",
+    )
     ax.set_title("Divider line drawn — verify, then close the window.")
     fig.canvas.draw()
     plt.show()
@@ -144,8 +153,11 @@ def select_tap_bboxes_interactive(
             _coords["y1"] = erelease.ydata
 
         selector = RectangleSelector(
-            ax, on_select, useblit=True,
-            button=[1], interactive=True,
+            ax,
+            on_select,
+            useblit=True,
+            button=[1],
+            interactive=True,
             props=dict(facecolor="cyan", edgecolor="red", alpha=0.3, linewidth=2),
         )
 
@@ -166,6 +178,7 @@ def select_tap_bboxes_interactive(
 # Geometry
 # ---------------------------------------------------------------------------
 
+
 def point_side_of_line(px, py, x1, y1, x2, y2) -> str:
     """Return 'A' if point is left of the line, 'B' if right.
     The line is always oriented top-to-bottom (smallest y first)."""
@@ -179,10 +192,11 @@ def point_side_of_line(px, py, x1, y1, x2, y2) -> str:
 # Image helpers
 # ---------------------------------------------------------------------------
 
+
 def crop_normalized(frame: np.ndarray, roi: tuple) -> np.ndarray:
     """Crop a frame using normalised (0-1) coordinates."""
     h, w = frame.shape[:2]
-    x1, y1, x2, y2 = int(roi[0]*w), int(roi[1]*h), int(roi[2]*w), int(roi[3]*h)
+    x1, y1, x2, y2 = int(roi[0] * w), int(roi[1] * h), int(roi[2] * w), int(roi[3] * h)
     return frame[y1:y2, x1:x2]
 
 
@@ -197,6 +211,7 @@ def savefig(fig, out_dir: Path, name: str):
 # ---------------------------------------------------------------------------
 # Video helpers
 # ---------------------------------------------------------------------------
+
 
 def open_video(video_path: Path):
     """Open a video and return (cap, fps, total_frames, duration, frame_0)."""
@@ -220,8 +235,7 @@ def open_video(video_path: Path):
     return fps, total_frames, duration, frame_0
 
 
-def export_cropped_video(video_path: Path, output_path: Path, roi: tuple,
-                         fps: float) -> Path:
+def export_cropped_video(video_path: Path, output_path: Path, roi: tuple, fps: float) -> Path:
     """Export the ROI-cropped version of a video to *output_path*."""
     cap = cv2.VideoCapture(str(video_path))
     ret, frame = cap.read()
@@ -258,6 +272,7 @@ def export_cropped_video(video_path: Path, output_path: Path, roi: tuple,
 # ROI config persistence
 # ---------------------------------------------------------------------------
 
+
 def load_roi_config(roi_json_path: Path) -> dict:
     """Load tap_roi.json if it exists, else return empty dict."""
     if roi_json_path.exists():
@@ -265,9 +280,12 @@ def load_roi_config(roi_json_path: Path) -> dict:
     return {}
 
 
-def save_roi_config(roi_json_path: Path, tap_roi: tuple,
-                    tap_divider: tuple | None = None,
-                    extra_keys: dict | None = None):
+def save_roi_config(
+    roi_json_path: Path,
+    tap_roi: tuple,
+    tap_divider: tuple | None = None,
+    extra_keys: dict | None = None,
+):
     """Save ROI and divider to tap_roi.json."""
     data = {"tap_roi": list(tap_roi)}
     if tap_divider:
@@ -278,8 +296,9 @@ def save_roi_config(roi_json_path: Path, tap_roi: tuple,
     print(f"ROI config saved to {roi_json_path}")
 
 
-def resolve_roi(config_roi, roi_json_path: Path, frame_0: np.ndarray,
-                interactive: bool = False) -> tuple:
+def resolve_roi(
+    config_roi, roi_json_path: Path, frame_0: np.ndarray, interactive: bool = False
+) -> tuple:
     """Resolve the tap ROI from config value, JSON file, or interactive selection.
 
     Parameters
@@ -299,8 +318,7 @@ def resolve_roi(config_roi, roi_json_path: Path, frame_0: np.ndarray,
             data = load_roi_config(roi_json_path)
             if "tap_roi" in data:
                 tap_roi = tuple(data["tap_roi"])
-                print(f"TAP_ROI loaded from {roi_json_path}: "
-                      f"{tuple(round(v, 4) for v in tap_roi)}")
+                print(f"TAP_ROI loaded from {roi_json_path}: {tuple(round(v, 4) for v in tap_roi)}")
                 return tap_roi
 
         print("Opening ROI selector on frame 0 ...")
@@ -313,17 +331,23 @@ def resolve_roi(config_roi, roi_json_path: Path, frame_0: np.ndarray,
     return tap_roi
 
 
-def resolve_divider(config_divider, roi_json_path: Path,
-                    tap_roi: tuple, frame_0: np.ndarray,
-                    interactive: bool = False) -> tuple | None:
+def resolve_divider(
+    config_divider,
+    roi_json_path: Path,
+    tap_roi: tuple,
+    frame_0: np.ndarray,
+    interactive: bool = False,
+) -> tuple | None:
     """Resolve the A|B divider from config, JSON, or interactive selection."""
     if interactive or config_divider is None:
         if not interactive:
             data = load_roi_config(roi_json_path)
             if "tap_divider" in data:
                 tap_divider = tuple(data["tap_divider"])
-                print(f"TAP_DIVIDER loaded from {roi_json_path}: "
-                      f"{tuple(round(v, 4) for v in tap_divider)}")
+                print(
+                    f"TAP_DIVIDER loaded from {roi_json_path}: "
+                    f"{tuple(round(v, 4) for v in tap_divider)}"
+                )
                 return tap_divider
 
             if not interactive:

@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
-from backend.database.models import Base, Video, TapEvent
+from backend.database.models import Base, TapEvent, Video
 
 
 @pytest.fixture
@@ -29,9 +29,17 @@ def test_videos_columns(db):
     insp = inspect(db.bind)
     cols = {c["name"] for c in insp.get_columns("videos")}
     expected = {
-        "id", "filename", "original_name", "upload_date", "status",
-        "duration_sec", "error_message", "ml_approach",
-        "processing_started_at", "processing_finished_at", "output_dir",
+        "id",
+        "filename",
+        "original_name",
+        "upload_date",
+        "status",
+        "duration_sec",
+        "error_message",
+        "ml_approach",
+        "processing_started_at",
+        "processing_finished_at",
+        "output_dir",
     }
     assert expected == cols
 
@@ -40,8 +48,15 @@ def test_tap_events_columns(db):
     insp = inspect(db.bind)
     cols = {c["name"] for c in insp.get_columns("tap_events")}
     expected = {
-        "id", "video_id", "tap", "frame_start", "frame_end",
-        "timestamp_start", "timestamp_end", "confidence", "count",
+        "id",
+        "video_id",
+        "tap",
+        "frame_start",
+        "frame_end",
+        "timestamp_start",
+        "timestamp_end",
+        "confidence",
+        "count",
     }
     assert expected == cols
 
@@ -61,9 +76,12 @@ def test_insert_tap_event(db):
     db.commit()
 
     ev = TapEvent(
-        video_id=v.id, tap="A",
-        frame_start=0, frame_end=100,
-        timestamp_start=0.0, timestamp_end=5.0,
+        video_id=v.id,
+        tap="A",
+        frame_start=0,
+        frame_end=100,
+        timestamp_start=0.0,
+        timestamp_end=5.0,
     )
     db.add(ev)
     db.commit()
@@ -78,9 +96,12 @@ def test_cascade_delete(db):
     db.commit()
 
     ev = TapEvent(
-        video_id=v.id, tap="B",
-        frame_start=10, frame_end=50,
-        timestamp_start=0.5, timestamp_end=2.5,
+        video_id=v.id,
+        tap="B",
+        frame_start=10,
+        frame_end=50,
+        timestamp_start=0.5,
+        timestamp_end=2.5,
     )
     db.add(ev)
     db.commit()

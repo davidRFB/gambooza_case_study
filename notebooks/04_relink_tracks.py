@@ -53,11 +53,11 @@ import pandas as pd
 # Defaults
 # ---------------------------------------------------------------------------
 
-MAX_GAP_FRAMES = 40   # 2 s at 20 fps
-MAX_DIST_PX = 50      # sequential-merge centre distance threshold
-COLOC_DIST_PX = 30    # co-location merge median-centre distance threshold
-MIN_IOU = 0.2         # bbox IoU gate for both strategies
-MAX_INTERP_GAP = 10   # interpolate gaps <= 0.5 s only
+MAX_GAP_FRAMES = 40  # 2 s at 20 fps
+MAX_DIST_PX = 50  # sequential-merge centre distance threshold
+COLOC_DIST_PX = 30  # co-location merge median-centre distance threshold
+MIN_IOU = 0.2  # bbox IoU gate for both strategies
+MAX_INTERP_GAP = 10  # interpolate gaps <= 0.5 s only
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -69,10 +69,18 @@ def parse_args():
         description="Re-link fragmented cup tracks from raw YOLO detections.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--input", required=True, type=Path,
-                   help="Path to raw_detections.csv from 03_YOLO_track.py.")
-    p.add_argument("--output", required=True, type=Path,
-                   help="Directory for output files (relinked CSV, plots).")
+    p.add_argument(
+        "--input",
+        required=True,
+        type=Path,
+        help="Path to raw_detections.csv from 03_YOLO_track.py.",
+    )
+    p.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help="Directory for output files (relinked CSV, plots).",
+    )
     p.add_argument("--max-gap-frames", type=int, default=MAX_GAP_FRAMES)
     p.add_argument("--max-dist-px", type=float, default=MAX_DIST_PX)
     p.add_argument("--coloc-dist-px", type=float, default=COLOC_DIST_PX)
@@ -80,12 +88,19 @@ def parse_args():
     p.add_argument("--max-interp-gap", type=int, default=MAX_INTERP_GAP)
 
     # Annotated video output
-    p.add_argument("--video", type=Path,
-                   help="Path to original video file (required for --record-range).")
-    p.add_argument("--record-range", nargs=2, type=float, metavar=("START", "STOP"),
-                   help="Export annotated video for this time range in seconds. "
-                        "E.g. --record-range 50 80.  Requires --video.")
+    p.add_argument(
+        "--video", type=Path, help="Path to original video file (required for --record-range)."
+    )
+    p.add_argument(
+        "--record-range",
+        nargs=2,
+        type=float,
+        metavar=("START", "STOP"),
+        help="Export annotated video for this time range in seconds. "
+        "E.g. --record-range 50 80.  Requires --video.",
+    )
     return p.parse_args()
+
 
 # ---------------------------------------------------------------------------
 # Union-Find
@@ -114,6 +129,7 @@ class UnionFind:
         self.parent[rb] = ra
         if self.rank[ra] == self.rank[rb]:
             self.rank[ra] += 1
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -149,15 +165,33 @@ def build_track_summaries(cups: pd.DataFrame) -> dict:
             "first_center": (float(grp["cx"].iloc[0]), float(grp["cy"].iloc[0])),
             "last_center": (float(grp["cx"].iloc[-1]), float(grp["cy"].iloc[-1])),
             "median_center": (float(grp["cx"].median()), float(grp["cy"].median())),
-            "first_bbox": tuple(float(v) for v in
-                                (grp["x1"].iloc[0], grp["y1"].iloc[0],
-                                 grp["x2"].iloc[0], grp["y2"].iloc[0])),
-            "last_bbox": tuple(float(v) for v in
-                               (grp["x1"].iloc[-1], grp["y1"].iloc[-1],
-                                grp["x2"].iloc[-1], grp["y2"].iloc[-1])),
-            "median_bbox": tuple(float(v) for v in
-                                 (grp["x1"].median(), grp["y1"].median(),
-                                  grp["x2"].median(), grp["y2"].median())),
+            "first_bbox": tuple(
+                float(v)
+                for v in (
+                    grp["x1"].iloc[0],
+                    grp["y1"].iloc[0],
+                    grp["x2"].iloc[0],
+                    grp["y2"].iloc[0],
+                )
+            ),
+            "last_bbox": tuple(
+                float(v)
+                for v in (
+                    grp["x1"].iloc[-1],
+                    grp["y1"].iloc[-1],
+                    grp["x2"].iloc[-1],
+                    grp["y2"].iloc[-1],
+                )
+            ),
+            "median_bbox": tuple(
+                float(v)
+                for v in (
+                    grp["x1"].median(),
+                    grp["y1"].median(),
+                    grp["x2"].median(),
+                    grp["y2"].median(),
+                )
+            ),
             "frames_set": set(grp["frame"].astype(int)),
         }
     return summaries
@@ -172,27 +206,26 @@ def savefig(fig, out_dir: Path, name: str):
 
 def crop_normalized(frame: np.ndarray, roi: tuple) -> np.ndarray:
     h, w = frame.shape[:2]
-    x1, y1, x2, y2 = int(roi[0]*w), int(roi[1]*h), int(roi[2]*w), int(roi[3]*h)
+    x1, y1, x2, y2 = int(roi[0] * w), int(roi[1] * h), int(roi[2] * w), int(roi[3] * h)
     return frame[y1:y2, x1:x2]
 
 
 # 10 distinct colours (BGR) for drawing boxes, cycled by track_id
 _TRACK_COLORS = [
-    (230, 159,  23),  # blue
-    ( 34, 200,  78),  # green
-    ( 50,  70, 230),  # red
-    (210, 180,  60),  # cyan-ish
-    (100,  60, 220),  # magenta
-    ( 50, 210, 210),  # yellow
+    (230, 159, 23),  # blue
+    (34, 200, 78),  # green
+    (50, 70, 230),  # red
+    (210, 180, 60),  # cyan-ish
+    (100, 60, 220),  # magenta
+    (50, 210, 210),  # yellow
     (180, 105, 255),  # pink
-    (255, 160,  80),  # light blue
-    ( 80, 255, 160),  # light green
+    (255, 160, 80),  # light blue
+    (80, 255, 160),  # light green
     (140, 140, 255),  # salmon
 ]
 
 
-def draw_detections(frame: np.ndarray, dets: pd.DataFrame,
-                    track_color_map: dict) -> np.ndarray:
+def draw_detections(frame: np.ndarray, dets: pd.DataFrame, track_color_map: dict) -> np.ndarray:
     """Draw bounding boxes + labels for all detections on a frame."""
     out = frame.copy()
     for _, row in dets.iterrows():
@@ -207,10 +240,18 @@ def draw_detections(frame: np.ndarray, dets: pd.DataFrame,
         label = f"{cls} #{tid}" if conf > 0 else f"{cls} #{tid} (interp)"
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
         cv2.rectangle(out, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
-        cv2.putText(out, label, (x1 + 2, y1 - 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1,
-                    cv2.LINE_AA)
+        cv2.putText(
+            out,
+            label,
+            (x1 + 2, y1 - 4),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
     return out
+
 
 # ---------------------------------------------------------------------------
 # Annotated video
@@ -233,8 +274,10 @@ def _render_annotated_video(args, df: pd.DataFrame):
 
     rec_start = int(args.record_range[0] * fps)
     rec_stop = int(args.record_range[1] * fps)
-    print(f"\nRendering annotated video: {args.record_range[0]:.1f}s → "
-          f"{args.record_range[1]:.1f}s  (frames {rec_start}–{rec_stop})")
+    print(
+        f"\nRendering annotated video: {args.record_range[0]:.1f}s → "
+        f"{args.record_range[1]:.1f}s  (frames {rec_start}–{rec_stop})"
+    )
 
     # Build per-frame lookup from relinked detections
     frame_dets: dict[int, pd.DataFrame] = {}
@@ -245,8 +288,9 @@ def _render_annotated_video(args, df: pd.DataFrame):
 
     # Assign stable colour per relinked track_id
     unique_tids = sorted(df["track_id"].unique())
-    track_color_map = {int(tid): _TRACK_COLORS[i % len(_TRACK_COLORS)]
-                       for i, tid in enumerate(unique_tids)}
+    track_color_map = {
+        int(tid): _TRACK_COLORS[i % len(_TRACK_COLORS)] for i, tid in enumerate(unique_tids)
+    }
 
     # Compute divider pixel coords (on crop)
     ref_frame_idx = 0
@@ -257,8 +301,12 @@ def _render_annotated_video(args, df: pd.DataFrame):
 
     div_px = None
     if tap_divider:
-        div_px = (int(tap_divider[0] * cw), int(tap_divider[1] * ch),
-                  int(tap_divider[2] * cw), int(tap_divider[3] * ch))
+        div_px = (
+            int(tap_divider[0] * cw),
+            int(tap_divider[1] * ch),
+            int(tap_divider[2] * cw),
+            int(tap_divider[3] * ch),
+        )
 
     # Seek to start and iterate
     cap.set(cv2.CAP_PROP_POS_FRAMES, rec_start)
@@ -277,24 +325,35 @@ def _render_annotated_video(args, df: pd.DataFrame):
 
         # Draw A|B divider
         if div_px:
-            cv2.line(crop, (div_px[0], div_px[1]), (div_px[2], div_px[3]),
-                     (0, 0, 255), 2)
-            cv2.putText(crop, "A", (div_px[0] // 2, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
-            cv2.putText(crop, "B",
-                        ((div_px[0] + div_px[2]) // 2 + 20, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 255), 2)
+            cv2.line(crop, (div_px[0], div_px[1]), (div_px[2], div_px[3]), (0, 0, 255), 2)
+            cv2.putText(
+                crop, "A", (div_px[0] // 2, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2
+            )
+            cv2.putText(
+                crop,
+                "B",
+                ((div_px[0] + div_px[2]) // 2 + 20, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (255, 0, 255),
+                2,
+            )
 
         # Timestamp
-        cv2.putText(crop, f"{fidx / fps:.1f}s",
-                    (crop.shape[1] - 120, crop.shape[0] - 15),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(
+            crop,
+            f"{fidx / fps:.1f}s",
+            (crop.shape[1] - 120, crop.shape[0] - 15),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 255),
+            2,
+        )
 
         if video_writer is None:
             h_out, w_out = crop.shape[:2]
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            video_writer = cv2.VideoWriter(str(rec_path), fourcc, fps,
-                                           (w_out, h_out))
+            video_writer = cv2.VideoWriter(str(rec_path), fourcc, fps, (w_out, h_out))
             print(f"  Video writer opened: {rec_path} ({w_out}x{h_out})")
         video_writer.write(crop)
 
@@ -323,17 +382,18 @@ def main():
 
     cups = df[df["class"] == "cup"].copy()
     tids = sorted(int(t) for t in cups["track_id"].unique())
-    print(f"Loaded {len(df)} detections  |  {len(cups)} cup rows  |  "
-          f"{len(tids)} cup track IDs")
+    print(f"Loaded {len(df)} detections  |  {len(cups)} cup rows  |  {len(tids)} cup track IDs")
 
     # ── 2. Per-track summaries ─────────────────────────────────────────────
     summaries = build_track_summaries(cups)
     print("\nTrack summaries:")
     for tid in tids:
         s = summaries[tid]
-        print(f"  Track {tid:3d}:  frames {s['first_frame']:4d}–{s['last_frame']:4d}  "
-              f"dets={s['n_dets']:4d}  "
-              f"median=({s['median_center'][0]:.0f},{s['median_center'][1]:.0f})")
+        print(
+            f"  Track {tid:3d}:  frames {s['first_frame']:4d}–{s['last_frame']:4d}  "
+            f"dets={s['n_dets']:4d}  "
+            f"median=({s['median_center'][0]:.0f},{s['median_center'][1]:.0f})"
+        )
 
     # ── 3. Pairwise candidate matching ─────────────────────────────────────
     uf = UnionFind()
@@ -341,7 +401,7 @@ def main():
 
     for i, a_id in enumerate(tids):
         a = summaries[a_id]
-        for b_id in tids[i + 1:]:
+        for b_id in tids[i + 1 :]:
             b = summaries[b_id]
 
             # --- Strategy 1: co-location (fragments sharing a position) ---
@@ -355,9 +415,15 @@ def main():
                     # sustained co-detection which signals distinct objects
                     if len(overlap_frames) <= max(2, int(min_dets * 0.3)):
                         uf.union(a_id, b_id)
-                        merges.append((a_id, b_id, "coloc",
-                                       f"dist={med_dist:.1f}  iou={iou:.2f}  "
-                                       f"overlap_frames={len(overlap_frames)}"))
+                        merges.append(
+                            (
+                                a_id,
+                                b_id,
+                                "coloc",
+                                f"dist={med_dist:.1f}  iou={iou:.2f}  "
+                                f"overlap_frames={len(overlap_frames)}",
+                            )
+                        )
                         continue
 
             # --- Strategy 2: sequential (A ends → B starts nearby) --------
@@ -374,8 +440,14 @@ def main():
                 iou = bbox_iou(fa["last_bbox"], fb["first_bbox"])
                 if iou >= args.min_iou:
                     uf.union(a_id, b_id)
-                    merges.append((first_id, second_id, "sequential",
-                                   f"gap={gap}  dist={dist:.1f}  iou={iou:.2f}"))
+                    merges.append(
+                        (
+                            first_id,
+                            second_id,
+                            "sequential",
+                            f"gap={gap}  dist={dist:.1f}  iou={iou:.2f}",
+                        )
+                    )
                     break  # already merged, no need to check reverse
 
     # ── 4. Build old→canonical mapping via Union-Find ──────────────────────
@@ -426,19 +498,21 @@ def main():
             rb = track.iloc[idx + 1]
             for f in range(frames[idx] + 1, frames[idx + 1]):
                 alpha = (f - frames[idx]) / gap
-                interp_rows.append({
-                    "frame": f,
-                    "time_s": ra["time_s"] + alpha * (rb["time_s"] - ra["time_s"]),
-                    "class": "cup",
-                    "confidence": 0.0,
-                    "track_id": int(tid),
-                    "x1": ra["x1"] + alpha * (rb["x1"] - ra["x1"]),
-                    "y1": ra["y1"] + alpha * (rb["y1"] - ra["y1"]),
-                    "x2": ra["x2"] + alpha * (rb["x2"] - ra["x2"]),
-                    "y2": ra["y2"] + alpha * (rb["y2"] - ra["y2"]),
-                    "original_track_id": int(tid),
-                    "interpolated": True,
-                })
+                interp_rows.append(
+                    {
+                        "frame": f,
+                        "time_s": ra["time_s"] + alpha * (rb["time_s"] - ra["time_s"]),
+                        "class": "cup",
+                        "confidence": 0.0,
+                        "track_id": int(tid),
+                        "x1": ra["x1"] + alpha * (rb["x1"] - ra["x1"]),
+                        "y1": ra["y1"] + alpha * (rb["y1"] - ra["y1"]),
+                        "x2": ra["x2"] + alpha * (rb["x2"] - ra["x2"]),
+                        "y2": ra["y2"] + alpha * (rb["y2"] - ra["y2"]),
+                        "original_track_id": int(tid),
+                        "interpolated": True,
+                    }
+                )
 
     if interp_rows:
         df = pd.concat([df, pd.DataFrame(interp_rows)], ignore_index=True)
@@ -446,16 +520,29 @@ def main():
     print(f"\nInterpolated {len(interp_rows)} rows across short cup-track gaps")
 
     # ── 7. Save relinked_detections.csv ────────────────────────────────────
-    out_cols = ["frame", "time_s", "class", "confidence", "track_id",
-                "x1", "y1", "x2", "y2", "original_track_id", "interpolated"]
+    out_cols = [
+        "frame",
+        "time_s",
+        "class",
+        "confidence",
+        "track_id",
+        "x1",
+        "y1",
+        "x2",
+        "y2",
+        "original_track_id",
+        "interpolated",
+    ]
     out_csv = args.output / "relinked_detections.csv"
     df[out_cols].to_csv(out_csv, index=False)
 
     relinked_cups = df[df["class"] == "cup"]
     print(f"\nSaved {out_csv}")
     print(f"  Total rows:       {len(df)}")
-    print(f"  Cup rows:         {len(relinked_cups)} "
-          f"({relinked_cups['interpolated'].sum()} interpolated)")
+    print(
+        f"  Cup rows:         {len(relinked_cups)} "
+        f"({relinked_cups['interpolated'].sum()} interpolated)"
+    )
     print(f"  Unique cup IDs:   {relinked_cups['track_id'].nunique()}")
 
     # ── 8. Before / after timeline visualisation ───────────────────────────
@@ -470,7 +557,8 @@ def main():
     n_after = len(tids_after)
 
     fig, (ax1, ax2) = plt.subplots(
-        2, 1,
+        2,
+        1,
         figsize=(16, max(6, (n_before + n_after) * 0.28)),
         sharex=True,
         gridspec_kw={"height_ratios": [n_before, max(n_after, 1)]},
@@ -494,17 +582,21 @@ def main():
         real = sub[~sub["interpolated"]]
         interp = sub[sub["interpolated"]]
         t0, t1 = sub["time_s"].min(), sub["time_s"].max()
-        ax2.barh(row, t1 - t0, left=t0, height=0.6, alpha=0.5,
-                 color=cmap(row % 10))
-        ax2.scatter(real["time_s"], [row] * len(real),
-                    s=6, color="black", zorder=3)
+        ax2.barh(row, t1 - t0, left=t0, height=0.6, alpha=0.5, color=cmap(row % 10))
+        ax2.scatter(real["time_s"], [row] * len(real), s=6, color="black", zorder=3)
         if len(interp):
-            ax2.scatter(interp["time_s"], [row] * len(interp),
-                        s=4, color="red", zorder=3, alpha=0.5, marker="x")
+            ax2.scatter(
+                interp["time_s"],
+                [row] * len(interp),
+                s=4,
+                color="red",
+                zorder=3,
+                alpha=0.5,
+                marker="x",
+            )
     ax2.set_yticks(range(n_after))
     ax2.set_yticklabels([f"Cup {t}" for t in tids_after], fontsize=9)
-    ax2.set_title(f"AFTER re-linking — {n_after} physical cups  "
-                  f"(red × = interpolated)")
+    ax2.set_title(f"AFTER re-linking — {n_after} physical cups  (red × = interpolated)")
     ax2.set_ylabel("Cup ID")
     ax2.set_xlabel("Time (s)")
 
@@ -520,10 +612,10 @@ def main():
         else:
             _render_annotated_video(args, df)
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  BEFORE: {n_before} cup track IDs")
     print(f"  AFTER:  {n_after} physical cups")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
 
 if __name__ == "__main__":

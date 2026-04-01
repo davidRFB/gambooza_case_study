@@ -49,17 +49,16 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-
 from common import crop_normalized, savefig
 
 # ── Defaults ────────────────────────────────────────────────────────────────
 
-OVERLAP_THRESHOLD = 15   # frames of co-existence → incompatible
-MIN_TRACK_DETS = 2       # ignore single-detection noise
-MAX_INTERP_GAP = 10      # interpolate gaps ≤ 0.5 s
-MIN_POUR_FRAMES = 30     # minimum frames after relinking to count as pour
-MOVEMENT_THRESHOLD = 5.0 # minimum spatial spread (px) to count as pour
-VIDEO_PADDING = 2.0      # seconds of padding around pour events in auto-video
+OVERLAP_THRESHOLD = 15  # frames of co-existence → incompatible
+MIN_TRACK_DETS = 2  # ignore single-detection noise
+MAX_INTERP_GAP = 10  # interpolate gaps ≤ 0.5 s
+MIN_POUR_FRAMES = 30  # minimum frames after relinking to count as pour
+MOVEMENT_THRESHOLD = 5.0  # minimum spatial spread (px) to count as pour
+VIDEO_PADDING = 2.0  # seconds of padding around pour events in auto-video
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
 
@@ -67,32 +66,62 @@ VIDEO_PADDING = 2.0      # seconds of padding around pour events in auto-video
 def parse_args():
     p = argparse.ArgumentParser(
         description="Re-link fragmented cup tracks via temporal co-existence "
-                    "constraints and spatial affinity.",
+        "constraints and spatial affinity.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--input", required=True, type=Path,
-                   help="raw_detections.csv from 03_YOLO_track.py")
-    p.add_argument("--output", required=True, type=Path,
-                   help="Output directory")
-    p.add_argument("--overlap-threshold", type=int, default=OVERLAP_THRESHOLD,
-                   help="Minimum frame overlap to declare two tracks incompatible.")
-    p.add_argument("--min-track-dets", type=int, default=MIN_TRACK_DETS,
-                   help="Ignore tracks with fewer detections than this.")
-    p.add_argument("--max-interp-gap", type=int, default=MAX_INTERP_GAP,
-                   help="Interpolate detection gaps up to this many frames.")
-    p.add_argument("--min-pour-frames", type=int, default=MIN_POUR_FRAMES,
-                   help="Minimum frames after relinking to count a cup as a pour.")
-    p.add_argument("--movement-threshold", type=float, default=MOVEMENT_THRESHOLD,
-                   help="Minimum spatial spread (px) to count a cup as a pour.")
-    p.add_argument("--video-padding", type=float, default=VIDEO_PADDING,
-                   help="Seconds of padding around pour events in auto-generated video.")
-    p.add_argument("--video", type=Path,
-                   help="Path to original video file (required for --record-range).")
-    p.add_argument("--record-range", nargs=2, type=float,
-                   metavar=("START", "STOP"),
-                   help="Export annotated video for this time range in seconds. "
-                        "E.g. --record-range 50 80.  Requires --video.")
+    p.add_argument(
+        "--input", required=True, type=Path, help="raw_detections.csv from 03_YOLO_track.py"
+    )
+    p.add_argument("--output", required=True, type=Path, help="Output directory")
+    p.add_argument(
+        "--overlap-threshold",
+        type=int,
+        default=OVERLAP_THRESHOLD,
+        help="Minimum frame overlap to declare two tracks incompatible.",
+    )
+    p.add_argument(
+        "--min-track-dets",
+        type=int,
+        default=MIN_TRACK_DETS,
+        help="Ignore tracks with fewer detections than this.",
+    )
+    p.add_argument(
+        "--max-interp-gap",
+        type=int,
+        default=MAX_INTERP_GAP,
+        help="Interpolate detection gaps up to this many frames.",
+    )
+    p.add_argument(
+        "--min-pour-frames",
+        type=int,
+        default=MIN_POUR_FRAMES,
+        help="Minimum frames after relinking to count a cup as a pour.",
+    )
+    p.add_argument(
+        "--movement-threshold",
+        type=float,
+        default=MOVEMENT_THRESHOLD,
+        help="Minimum spatial spread (px) to count a cup as a pour.",
+    )
+    p.add_argument(
+        "--video-padding",
+        type=float,
+        default=VIDEO_PADDING,
+        help="Seconds of padding around pour events in auto-generated video.",
+    )
+    p.add_argument(
+        "--video", type=Path, help="Path to original video file (required for --record-range)."
+    )
+    p.add_argument(
+        "--record-range",
+        nargs=2,
+        type=float,
+        metavar=("START", "STOP"),
+        help="Export annotated video for this time range in seconds. "
+        "E.g. --record-range 50 80.  Requires --video.",
+    )
     return p.parse_args()
+
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -107,17 +136,16 @@ def build_track_info(cups: pd.DataFrame, min_dets: int) -> dict:
         tid = int(tid)
         info[tid] = {
             "first_frame": int(grp["frame"].iloc[0]),
-            "last_frame":  int(grp["frame"].iloc[-1]),
-            "frames":      set(grp["frame"].astype(int)),
-            "median_cx":   float(grp["cx"].median()),
-            "median_cy":   float(grp["cy"].median()),
-            "n_dets":      len(grp),
+            "last_frame": int(grp["frame"].iloc[-1]),
+            "frames": set(grp["frame"].astype(int)),
+            "median_cx": float(grp["cx"].median()),
+            "median_cy": float(grp["cy"].median()),
+            "n_dets": len(grp),
         }
     return info
 
 
-def build_incompatibility(tids: list[int], info: dict,
-                          threshold: int) -> set[tuple[int, int]]:
+def build_incompatibility(tids: list[int], info: dict, threshold: int) -> set[tuple[int, int]]:
     """Pairs (a, b) with a < b whose temporal overlap exceeds *threshold*."""
     incompat = set()
     for a, b in combinations(tids, 2):
@@ -146,10 +174,7 @@ def greedy_coexistence_groups(
 
         compatible_gi = []
         for gi, group in enumerate(groups):
-            if all(
-                (min(tid, other), max(tid, other)) not in incompat
-                for other in group
-            ):
+            if all((min(tid, other), max(tid, other)) not in incompat for other in group):
                 compatible_gi.append(gi)
 
         if not compatible_gi:
@@ -161,8 +186,7 @@ def greedy_coexistence_groups(
             for gi in compatible_gi:
                 centroid_x = np.median([info[m]["median_cx"] for m in groups[gi]])
                 centroid_y = np.median([info[m]["median_cy"] for m in groups[gi]])
-                d = np.hypot(t["median_cx"] - centroid_x,
-                             t["median_cy"] - centroid_y)
+                d = np.hypot(t["median_cx"] - centroid_x, t["median_cy"] - centroid_y)
                 if d < best_dist:
                     best_dist = d
                     best_gi = gi
@@ -172,21 +196,20 @@ def greedy_coexistence_groups(
 
 
 _TRACK_COLORS = [
-    (230, 159,  23),  # blue
-    ( 34, 200,  78),  # green
-    ( 50,  70, 230),  # red
-    (210, 180,  60),  # cyan-ish
-    (100,  60, 220),  # magenta
-    ( 50, 210, 210),  # yellow
+    (230, 159, 23),  # blue
+    (34, 200, 78),  # green
+    (50, 70, 230),  # red
+    (210, 180, 60),  # cyan-ish
+    (100, 60, 220),  # magenta
+    (50, 210, 210),  # yellow
     (180, 105, 255),  # pink
-    (255, 160,  80),  # light blue
-    ( 80, 255, 160),  # light green
+    (255, 160, 80),  # light blue
+    (80, 255, 160),  # light green
     (140, 140, 255),  # salmon
 ]
 
 
-def draw_detections(frame: np.ndarray, dets: pd.DataFrame,
-                    track_color_map: dict) -> np.ndarray:
+def draw_detections(frame: np.ndarray, dets: pd.DataFrame, track_color_map: dict) -> np.ndarray:
     """Draw bounding boxes + labels for all detections on a frame."""
     out = frame.copy()
     for _, row in dets.iterrows():
@@ -201,16 +224,26 @@ def draw_detections(frame: np.ndarray, dets: pd.DataFrame,
         label = f"{cls} #{tid}" if conf > 0 else f"{cls} #{tid} (interp)"
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
         cv2.rectangle(out, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
-        cv2.putText(out, label, (x1 + 2, y1 - 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1,
-                    cv2.LINE_AA)
+        cv2.putText(
+            out,
+            label,
+            (x1 + 2, y1 - 4),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
     return out
 
 
-def render_annotated_video(video_path: Path, output_dir: Path,
-                           frame_ranges: list[tuple[int, int]],
-                           df: pd.DataFrame,
-                           filename: str = "relinked_clip.mp4"):
+def render_annotated_video(
+    video_path: Path,
+    output_dir: Path,
+    frame_ranges: list[tuple[int, int]],
+    df: pd.DataFrame,
+    filename: str = "relinked_clip.mp4",
+):
     """Render annotated video for specific frame ranges with relinked detections.
 
     *frame_ranges* is a list of (start_frame, end_frame) tuples. Only frames
@@ -231,8 +264,10 @@ def render_annotated_video(video_path: Path, output_dir: Path,
     for start, stop in frame_ranges:
         needed_frames.update(range(start, min(stop + 1, total_frames)))
 
-    print(f"\nRendering annotated video for {len(frame_ranges)} segment(s) "
-          f"({len(needed_frames)} frames total)")
+    print(
+        f"\nRendering annotated video for {len(frame_ranges)} segment(s) "
+        f"({len(needed_frames)} frames total)"
+    )
 
     frame_dets: dict[int, pd.DataFrame] = {}
     for f, grp in df.groupby("frame"):
@@ -241,8 +276,9 @@ def render_annotated_video(video_path: Path, output_dir: Path,
             frame_dets[f] = grp
 
     unique_tids = sorted(df["track_id"].unique())
-    track_color_map = {int(tid): _TRACK_COLORS[i % len(_TRACK_COLORS)]
-                       for i, tid in enumerate(unique_tids)}
+    track_color_map = {
+        int(tid): _TRACK_COLORS[i % len(_TRACK_COLORS)] for i, tid in enumerate(unique_tids)
+    }
 
     video_writer = None
     rec_path = output_dir / filename
@@ -260,15 +296,20 @@ def render_annotated_video(video_path: Path, output_dir: Path,
             if fidx in frame_dets:
                 crop = draw_detections(crop, frame_dets[fidx], track_color_map)
 
-            cv2.putText(crop, f"{fidx / fps:.1f}s",
-                        (crop.shape[1] - 120, crop.shape[0] - 15),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.putText(
+                crop,
+                f"{fidx / fps:.1f}s",
+                (crop.shape[1] - 120, crop.shape[0] - 15),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
+                2,
+            )
 
             if video_writer is None:
                 h_out, w_out = crop.shape[:2]
                 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                video_writer = cv2.VideoWriter(str(rec_path), fourcc, fps,
-                                               (w_out, h_out))
+                video_writer = cv2.VideoWriter(str(rec_path), fourcc, fps, (w_out, h_out))
                 print(f"  Video writer opened: {rec_path} ({w_out}x{h_out})")
             video_writer.write(crop)
 
@@ -315,9 +356,11 @@ def run_relink(
     print(f"\n{len(tids)} cup tracks (≥ {min_track_dets} detections):")
     for tid in tids:
         t = info[tid]
-        print(f"  Track {tid:3d}: frames {t['first_frame']:4d}–{t['last_frame']:4d}  "
-              f"dets={t['n_dets']:4d}  "
-              f"median=({t['median_cx']:.0f}, {t['median_cy']:.0f})")
+        print(
+            f"  Track {tid:3d}: frames {t['first_frame']:4d}–{t['last_frame']:4d}  "
+            f"dets={t['n_dets']:4d}  "
+            f"median=({t['median_cx']:.0f}, {t['median_cy']:.0f})"
+        )
 
     # ── 3. Temporal incompatibility graph ───────────────────────────────
     incompat = build_incompatibility(tids, info, overlap_threshold)
@@ -347,9 +390,7 @@ def run_relink(
 
     # ── 5. Apply mapping ────────────────────────────────────────────────
     df["original_track_id"] = df["track_id"]
-    df["track_id"] = df["track_id"].map(
-        lambda t: mapping.get(int(t), int(t))
-    )
+    df["track_id"] = df["track_id"].map(lambda t: mapping.get(int(t), int(t)))
     df["interpolated"] = False
 
     # ── 6. Interpolate short gaps ───────────────────────────────────────
@@ -368,19 +409,21 @@ def run_relink(
             ra, rb = track.iloc[idx], track.iloc[idx + 1]
             for f in range(frames[idx] + 1, frames[idx + 1]):
                 alpha = (f - frames[idx]) / gap
-                interp_rows.append({
-                    "frame": f,
-                    "time_s": ra["time_s"] + alpha * (rb["time_s"] - ra["time_s"]),
-                    "class": "cup",
-                    "confidence": 0.0,
-                    "track_id": int(tid),
-                    "x1": ra["x1"] + alpha * (rb["x1"] - ra["x1"]),
-                    "y1": ra["y1"] + alpha * (rb["y1"] - ra["y1"]),
-                    "x2": ra["x2"] + alpha * (rb["x2"] - ra["x2"]),
-                    "y2": ra["y2"] + alpha * (rb["y2"] - ra["y2"]),
-                    "original_track_id": int(tid),
-                    "interpolated": True,
-                })
+                interp_rows.append(
+                    {
+                        "frame": f,
+                        "time_s": ra["time_s"] + alpha * (rb["time_s"] - ra["time_s"]),
+                        "class": "cup",
+                        "confidence": 0.0,
+                        "track_id": int(tid),
+                        "x1": ra["x1"] + alpha * (rb["x1"] - ra["x1"]),
+                        "y1": ra["y1"] + alpha * (rb["y1"] - ra["y1"]),
+                        "x2": ra["x2"] + alpha * (rb["x2"] - ra["x2"]),
+                        "y2": ra["y2"] + alpha * (rb["y2"] - ra["y2"]),
+                        "original_track_id": int(tid),
+                        "interpolated": True,
+                    }
+                )
 
     if interp_rows:
         df = pd.concat([df, pd.DataFrame(interp_rows)], ignore_index=True)
@@ -392,16 +435,29 @@ def run_relink(
     df["cy"] = (df["y1"] + df["y2"]) / 2
 
     # ── 7. Save relinked CSV ────────────────────────────────────────────
-    out_cols = ["frame", "time_s", "class", "confidence", "track_id",
-                "x1", "y1", "x2", "y2", "original_track_id", "interpolated"]
+    out_cols = [
+        "frame",
+        "time_s",
+        "class",
+        "confidence",
+        "track_id",
+        "x1",
+        "y1",
+        "x2",
+        "y2",
+        "original_track_id",
+        "interpolated",
+    ]
     out_csv = output_dir / "relinked_detections.csv"
     df[out_cols].to_csv(out_csv, index=False)
 
     relinked_cups = df[df["class"] == "cup"]
     print(f"\nSaved {out_csv}")
     print(f"  Total rows:       {len(df)}")
-    print(f"  Cup rows:         {len(relinked_cups)} "
-          f"({relinked_cups['interpolated'].sum()} interpolated)")
+    print(
+        f"  Cup rows:         {len(relinked_cups)} "
+        f"({relinked_cups['interpolated'].sum()} interpolated)"
+    )
     print(f"  Unique cup IDs:   {sorted(relinked_cups['track_id'].unique())}")
 
     # ── 8. Pour classification ──────────────────────────────────────────
@@ -415,8 +471,10 @@ def run_relink(
     pour_events: list[dict] = []
     tids_after = sorted(relinked_cups["track_id"].unique())
 
-    print(f"\nPour classification (min_frames={min_pour_frames}, "
-          f"movement_threshold={movement_threshold:.1f}px):")
+    print(
+        f"\nPour classification (min_frames={min_pour_frames}, "
+        f"movement_threshold={movement_threshold:.1f}px):"
+    )
     for tid in tids_after:
         sub = relinked_cups[relinked_cups["track_id"] == tid].sort_values("frame")
         n_frames = len(sub)
@@ -432,19 +490,23 @@ def run_relink(
         time_start = float(sub["time_s"].iloc[0])
         time_end = float(sub["time_s"].iloc[-1])
 
-        print(f"  Cup {tid:3d}: {time_start:.1f}s→{time_end:.1f}s  "
-              f"frames={n_frames}  move={movement:.1f}px  → {status}")
+        print(
+            f"  Cup {tid:3d}: {time_start:.1f}s→{time_end:.1f}s  "
+            f"frames={n_frames}  move={movement:.1f}px  → {status}"
+        )
 
         if is_pour:
-            pour_events.append({
-                "cup_id": int(tid),
-                "frame_start": frame_start,
-                "frame_end": frame_end,
-                "time_start": time_start,
-                "time_end": time_end,
-                "n_frames": n_frames,
-                "movement": movement,
-            })
+            pour_events.append(
+                {
+                    "cup_id": int(tid),
+                    "frame_start": frame_start,
+                    "frame_end": frame_end,
+                    "time_start": time_start,
+                    "time_end": time_end,
+                    "n_frames": n_frames,
+                    "movement": movement,
+                }
+            )
 
     print(f"\nTotal pour events: {len(pour_events)}")
 
@@ -462,7 +524,8 @@ def run_relink(
     n_before, n_after = len(tids_before), len(tids_after)
 
     fig, (ax1, ax2) = plt.subplots(
-        2, 1,
+        2,
+        1,
         figsize=(16, max(6, (n_before + n_after) * 0.28)),
         sharex=True,
         gridspec_kw={"height_ratios": [n_before, max(n_after, 1)]},
@@ -488,19 +551,27 @@ def run_relink(
         color = cmap(row % 10)
         alpha = 0.7 if tid in pour_cup_ids else 0.2
         ax2.barh(row, t1 - t0, left=t0, height=0.6, alpha=alpha, color=color)
-        ax2.scatter(real["time_s"], [row] * len(real),
-                    s=6, color="black", zorder=3)
+        ax2.scatter(real["time_s"], [row] * len(real), s=6, color="black", zorder=3)
         if len(interp):
-            ax2.scatter(interp["time_s"], [row] * len(interp),
-                        s=4, color="red", zorder=3, alpha=0.5, marker="x")
+            ax2.scatter(
+                interp["time_s"],
+                [row] * len(interp),
+                s=4,
+                color="red",
+                zorder=3,
+                alpha=0.5,
+                marker="x",
+            )
         label = f"Cup {tid}"
         if tid in pour_cup_ids:
             label += " (POUR)"
         ax2.text(t0, row + 0.3, label, fontsize=7, va="bottom")
     ax2.set_yticks(range(n_after))
     ax2.set_yticklabels([f"Cup {t}" for t in tids_after], fontsize=9)
-    ax2.set_title(f"AFTER re-linking — {n_after} physical cups, "
-                  f"{len(pour_events)} pours  (red × = interpolated)")
+    ax2.set_title(
+        f"AFTER re-linking — {n_after} physical cups, "
+        f"{len(pour_events)} pours  (red × = interpolated)"
+    )
     ax2.set_ylabel("Cup ID")
     ax2.set_xlabel("Time (s)")
 
@@ -511,10 +582,8 @@ def run_relink(
     fig, (ax_x, ax_y) = plt.subplots(2, 1, figsize=(12, 8))
     for tid in tids_after:
         sub = cups_after[cups_after["track_id"] == tid].sort_values("frame")
-        ax_x.plot(sub["frame"], sub["cx"], marker=".", markersize=3,
-                  label=f"Cup {tid}")
-        ax_y.plot(sub["frame"], sub["cy"], marker=".", markersize=3,
-                  label=f"Cup {tid}")
+        ax_x.plot(sub["frame"], sub["cx"], marker=".", markersize=3, label=f"Cup {tid}")
+        ax_y.plot(sub["frame"], sub["cy"], marker=".", markersize=3, label=f"Cup {tid}")
 
     ax_x.set_ylabel("center_x")
     ax_x.set_title("center_x vs frame — after re-linking")
@@ -544,26 +613,26 @@ def run_relink(
         merged_ranges: list[tuple[int, int]] = [frame_ranges[0]]
         for start, end in frame_ranges[1:]:
             if start <= merged_ranges[-1][1]:
-                merged_ranges[-1] = (merged_ranges[-1][0],
-                                     max(merged_ranges[-1][1], end))
+                merged_ranges[-1] = (merged_ranges[-1][0], max(merged_ranges[-1][1], end))
             else:
                 merged_ranges.append((start, end))
 
-        print(f"\nAuto-video: {len(merged_ranges)} segment(s) with "
-              f"{video_padding:.1f}s padding")
+        print(f"\nAuto-video: {len(merged_ranges)} segment(s) with {video_padding:.1f}s padding")
         for i, (s, e) in enumerate(merged_ranges):
-            print(f"  Segment {i}: frames {s}–{e} "
-                  f"({s / fps_est:.1f}s → {e / fps_est:.1f}s)")
+            print(f"  Segment {i}: frames {s}–{e} ({s / fps_est:.1f}s → {e / fps_est:.1f}s)")
 
-        render_annotated_video(video_path, output_dir, merged_ranges, df,
-                               filename="relinked_pour_clip.mp4")
+        render_annotated_video(
+            video_path, output_dir, merged_ranges, df, filename="relinked_pour_clip.mp4"
+        )
 
         # Save the frame ranges for SAM stage
         ranges_path = output_dir / "pour_frame_ranges.json"
-        ranges_path.write_text(json.dumps(
-            [{"start_frame": s, "end_frame": e} for s, e in merged_ranges],
-            indent=2,
-        ))
+        ranges_path.write_text(
+            json.dumps(
+                [{"start_frame": s, "end_frame": e} for s, e in merged_ranges],
+                indent=2,
+            )
+        )
         print(f"Pour frame ranges saved to {ranges_path}")
 
     elif record_range:
@@ -574,8 +643,7 @@ def run_relink(
             cap.release()
             rec_start = int(record_range[0] * fps_vid)
             rec_stop = int(record_range[1] * fps_vid)
-            render_annotated_video(video_path, output_dir,
-                                   [(rec_start, rec_stop)], df)
+            render_annotated_video(video_path, output_dir, [(rec_start, rec_stop)], df)
 
     print(f"\n{'=' * 60}")
     print(f"  BEFORE: {n_before} cup track IDs")

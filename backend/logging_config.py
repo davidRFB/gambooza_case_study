@@ -27,9 +27,7 @@ def setup_logging():
     if os.environ.get("LOG_TO_FILE", "").lower() == "true":
         log_dir = Path("data/logs")
         log_dir.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(
-            log_dir / "app.log", maxBytes=10_000_000, backupCount=3
-        )
+        file_handler = RotatingFileHandler(log_dir / "app.log", maxBytes=10_000_000, backupCount=3)
         file_handler.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
         root.addHandler(file_handler)
 

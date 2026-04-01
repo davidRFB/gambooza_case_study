@@ -36,15 +36,17 @@ from pathlib import Path
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-from ultralytics import YOLO, YOLOWorld
-
 from common import (
-    select_roi_interactive, crop_normalized, savefig,
+    crop_normalized,
+    savefig,
+    select_roi_interactive,
 )
+from ultralytics import YOLO, YOLOWorld
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def parse_args():
     p = argparse.ArgumentParser(
@@ -52,40 +54,75 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--video", required=True, type=Path, help="Path to input video file.")
-    p.add_argument("--output", required=True, type=Path,
-                   help="Directory where plots and results are saved (created if absent).")
+    p.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help="Directory where plots and results are saved (created if absent).",
+    )
 
     # ROI
     roi_g = p.add_mutually_exclusive_group()
-    roi_g.add_argument("--crop-area", action="store_true",
-                       help="Open an interactive window to select the tap ROI. "
-                            "Saves coordinates to <output>/tap_roi.json, then continues.")
-    roi_g.add_argument("--tap-roi", nargs=4, type=float,
-                       metavar=("X1", "Y1", "X2", "Y2"),
-                       help="Normalised tap-area ROI (0-1). Overrides any saved tap_roi.json.")
+    roi_g.add_argument(
+        "--crop-area",
+        action="store_true",
+        help="Open an interactive window to select the tap ROI. "
+        "Saves coordinates to <output>/tap_roi.json, then continues.",
+    )
+    roi_g.add_argument(
+        "--tap-roi",
+        nargs=4,
+        type=float,
+        metavar=("X1", "Y1", "X2", "Y2"),
+        help="Normalised tap-area ROI (0-1). Overrides any saved tap_roi.json.",
+    )
 
     # Model / detection
-    p.add_argument("--model", default="yolov8x-worldv2.pt",
-                   help="YOLO weights file or Ultralytics model name. "
-                        "Use a *-world*.pt model for open-vocabulary detection.")
-    p.add_argument("--classes", nargs="+", default=["cup", "person"],
-                   help="Classes to detect (only used with YOLO-World models). "
-                        "Ignored for standard YOLO models that use fixed COCO classes.")
-    p.add_argument("--sample-every", type=int, default=1,
-                   help="Process every Nth frame (1 = every frame, recommended for tracking).")
-    p.add_argument("--preview-second", type=float, default=60.0,
-                   help="Timestamp (s) used for the 'beer being served' preview frame.")
-    p.add_argument("--tracker", default="../config/botsort.yaml",
-                   help="Tracker config file (botsort.yaml or bytetrack.yaml). "
-                        "Default points to the project's tuned config.")
-    p.add_argument("--conf-threshold", type=float, default=0.25,
-                   help="Minimum detection confidence.")
+    p.add_argument(
+        "--model",
+        default="yolov8x-worldv2.pt",
+        help="YOLO weights file or Ultralytics model name. "
+        "Use a *-world*.pt model for open-vocabulary detection.",
+    )
+    p.add_argument(
+        "--classes",
+        nargs="+",
+        default=["cup", "person"],
+        help="Classes to detect (only used with YOLO-World models). "
+        "Ignored for standard YOLO models that use fixed COCO classes.",
+    )
+    p.add_argument(
+        "--sample-every",
+        type=int,
+        default=1,
+        help="Process every Nth frame (1 = every frame, recommended for tracking).",
+    )
+    p.add_argument(
+        "--preview-second",
+        type=float,
+        default=60.0,
+        help="Timestamp (s) used for the 'beer being served' preview frame.",
+    )
+    p.add_argument(
+        "--tracker",
+        default="../config/botsort.yaml",
+        help="Tracker config file (botsort.yaml or bytetrack.yaml). "
+        "Default points to the project's tuned config.",
+    )
+    p.add_argument(
+        "--conf-threshold", type=float, default=0.25, help="Minimum detection confidence."
+    )
 
     # Annotated video output
-    p.add_argument("--record-range", nargs=2, type=float, metavar=("START", "STOP"),
-                   help="Optional: export an annotated video for this time range (seconds). "
-                        "E.g. --record-range 50 80 records from 50s to 80s with "
-                        "bounding boxes, track IDs, and the A|B divider drawn on each frame.")
+    p.add_argument(
+        "--record-range",
+        nargs=2,
+        type=float,
+        metavar=("START", "STOP"),
+        help="Optional: export an annotated video for this time range (seconds). "
+        "E.g. --record-range 50 80 records from 50s to 80s with "
+        "bounding boxes, track IDs, and the A|B divider drawn on each frame.",
+    )
 
     return p.parse_args()
 
@@ -99,6 +136,7 @@ def parse_args():
 # ---------------------------------------------------------------------------
 # Core tracking function (importable by pipeline.py)
 # ---------------------------------------------------------------------------
+
 
 def run_yolo_tracking(
     video_path: Path,
@@ -137,8 +175,7 @@ def run_yolo_tracking(
     ret, frame_preview = cap.read()
     cap.release()
 
-    print(f"Frame 0: {frame_0.shape}  "
-          f"Preview frame ({preview_second:.0f}s): {frame_preview.shape}")
+    print(f"Frame 0: {frame_0.shape}  Preview frame ({preview_second:.0f}s): {frame_preview.shape}")
 
     # -- Crop preview frames ------------------------------------------------
     crop_0 = crop_normalized(frame_0, tap_roi)
@@ -166,13 +203,13 @@ def run_yolo_tracking(
         model = YOLO(model_name)
 
     # -- Full-video tracking ------------------------------------------------
-    print(f"\nTracking video every {sample_every} frame(s) "
-          f"with {tracker} ...")
+    print(f"\nTracking video every {sample_every} frame(s) with {tracker} ...")
     cap = cv2.VideoCapture(str(video_path))
     frame_idx = 0
-    all_detections = []          # (frame, time, class, conf, track_id, x1, y1, x2, y2)
-    track_data = defaultdict(lambda: {"frames": [], "times": [], "bboxes": [],
-                                       "confs": [], "class": None})
+    all_detections = []  # (frame, time, class, conf, track_id, x1, y1, x2, y2)
+    track_data = defaultdict(
+        lambda: {"frames": [], "times": [], "bboxes": [], "confs": [], "class": None}
+    )
 
     # -- Optional annotated video recording ---------------------------------
     rec_start_frame = rec_stop_frame = None
@@ -180,9 +217,11 @@ def run_yolo_tracking(
     if record_range:
         rec_start_frame = int(record_range[0] * fps)
         rec_stop_frame = int(record_range[1] * fps)
-        print(f"Recording annotated video: {record_range[0]:.1f}s -> "
-              f"{record_range[1]:.1f}s  "
-              f"(frames {rec_start_frame}-{rec_stop_frame})")
+        print(
+            f"Recording annotated video: {record_range[0]:.1f}s -> "
+            f"{record_range[1]:.1f}s  "
+            f"(frames {rec_start_frame}-{rec_stop_frame})"
+        )
 
     while True:
         ret, frame = cap.read()
@@ -191,8 +230,9 @@ def run_yolo_tracking(
 
         if frame_idx % sample_every == 0:
             crop = crop_normalized(frame, tap_roi)
-            results = model.track(crop, persist=True, tracker=tracker,
-                                  conf=conf_threshold, verbose=False)[0]
+            results = model.track(
+                crop, persist=True, tracker=tracker, conf=conf_threshold, verbose=False
+            )[0]
 
             if results.boxes is not None and results.boxes.id is not None:
                 for box in results.boxes:
@@ -203,8 +243,7 @@ def run_yolo_tracking(
                     x1, y1, x2, y2 = box.xyxy[0].tolist()
                     t_s = frame_idx / fps
 
-                    all_detections.append((frame_idx, t_s, name, conf, track_id,
-                                           x1, y1, x2, y2))
+                    all_detections.append((frame_idx, t_s, name, conf, track_id, x1, y1, x2, y2))
 
                     td = track_data[track_id]
                     td["frames"].append(frame_idx)
@@ -218,23 +257,31 @@ def run_yolo_tracking(
             if rec_start_frame is not None and rec_start_frame <= frame_idx <= rec_stop_frame:
                 annotated = results.plot()
                 # Timestamp overlay
-                cv2.putText(annotated, f"{frame_idx / fps:.1f}s",
-                            (annotated.shape[1] - 120, annotated.shape[0] - 15),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                cv2.putText(
+                    annotated,
+                    f"{frame_idx / fps:.1f}s",
+                    (annotated.shape[1] - 120, annotated.shape[0] - 15),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (255, 255, 255),
+                    2,
+                )
 
                 if video_writer is None:
                     h_out, w_out = annotated.shape[:2]
                     rec_path = output_dir / "annotated_clip.mp4"
                     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                    video_writer = cv2.VideoWriter(str(rec_path), fourcc,
-                                                   fps / sample_every,
-                                                   (w_out, h_out))
+                    video_writer = cv2.VideoWriter(
+                        str(rec_path), fourcc, fps / sample_every, (w_out, h_out)
+                    )
                     print(f"  Video writer opened: {rec_path} ({w_out}x{h_out})")
                 video_writer.write(annotated)
 
             if frame_idx % (sample_every * 100) == 0:
-                print(f"  Frame {frame_idx}/{total_frames}  "
-                      f"tracks so far: {len(track_data)}", end="\r")
+                print(
+                    f"  Frame {frame_idx}/{total_frames}  tracks so far: {len(track_data)}",
+                    end="\r",
+                )
 
         frame_idx += 1
 
@@ -242,8 +289,7 @@ def run_yolo_tracking(
     if video_writer is not None:
         video_writer.release()
         print(f"  Annotated video saved to {output_dir / 'annotated_clip.mp4'}")
-    print(f"\nTotal detections: {len(all_detections)}  "
-          f"Unique track IDs: {len(track_data)}")
+    print(f"\nTotal detections: {len(all_detections)}  Unique track IDs: {len(track_data)}")
 
     # -- Save raw detections to CSV -----------------------------------------
     raw_csv = output_dir / "raw_detections.csv"
@@ -251,8 +297,9 @@ def run_yolo_tracking(
         f.write("frame,time_s,class,confidence,track_id,x1,y1,x2,y2\n")
         for det in all_detections:
             fidx, t_s, name, conf, tid, x1, y1, x2, y2 = det
-            f.write(f"{fidx},{t_s:.4f},{name},{conf:.4f},{tid},"
-                    f"{x1:.2f},{y1:.2f},{x2:.2f},{y2:.2f}\n")
+            f.write(
+                f"{fidx},{t_s:.4f},{name},{conf:.4f},{tid},{x1:.2f},{y1:.2f},{x2:.2f},{y2:.2f}\n"
+            )
     print(f"Raw detections saved to {raw_csv}")
 
     # -- Detection timeline -------------------------------------------------
@@ -284,11 +331,13 @@ def run_yolo_tracking(
     for tid in sorted(cup_tracks.keys()):
         td = cup_tracks[tid]
         dur = td["times"][-1] - td["times"][0]
-        print(f"  ID {tid:3d}: "
-              f"{td['times'][0]:.1f}s -> {td['times'][-1]:.1f}s  "
-              f"dur={dur:.1f}s  dets={len(td['frames'])}  "
-              f"move={td['movement']:.1f}px  "
-              f"avg_conf={np.mean(td['confs']):.2f}")
+        print(
+            f"  ID {tid:3d}: "
+            f"{td['times'][0]:.1f}s -> {td['times'][-1]:.1f}s  "
+            f"dur={dur:.1f}s  dets={len(td['frames'])}  "
+            f"move={td['movement']:.1f}px  "
+            f"avg_conf={np.mean(td['confs']):.2f}"
+        )
 
     # -- Cup track timeline -------------------------------------------------
     sorted_tids = sorted(cup_tracks.keys())
@@ -296,8 +345,7 @@ def run_yolo_tracking(
     for row, tid in enumerate(sorted_tids):
         td = cup_tracks[tid]
         dur = td["times"][-1] - td["times"][0]
-        ax.barh(row, dur, left=td["times"][0], height=0.6,
-                label=f"ID {tid} ({dur:.1f}s)")
+        ax.barh(row, dur, left=td["times"][0], height=0.6, label=f"ID {tid} ({dur:.1f}s)")
         ax.scatter(td["times"], [row] * len(td["times"]), s=8, color="black", zorder=3)
     ax.set_yticks(range(len(sorted_tids)))
     ax.set_yticklabels([f"ID {tid}" for tid in sorted_tids])
@@ -332,6 +380,7 @@ def run_yolo_tracking(
 # Main (standalone CLI)
 # ---------------------------------------------------------------------------
 
+
 def main():
     args = parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -361,8 +410,10 @@ def main():
         tap_roi = tuple(data["tap_roi"])
         print(f"TAP_ROI loaded from {roi_json}: {tuple(round(v, 4) for v in tap_roi)}")
     else:
-        print("No TAP_ROI defined. Re-run with --crop-area to select one interactively,\n"
-              "or pass --tap-roi X1 Y1 X2 Y2.")
+        print(
+            "No TAP_ROI defined. Re-run with --crop-area to select one interactively,\n"
+            "or pass --tap-roi X1 Y1 X2 Y2."
+        )
         sys.exit(1)
 
     if args.crop_area:
