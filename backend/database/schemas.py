@@ -50,6 +50,7 @@ class VideoStatusResponse(BaseModel):
     ml_approach: str | None
     processing_started_at: datetime | None
     processing_finished_at: datetime | None
+    output_dir: str | None
     tap_a_count: int
     tap_b_count: int
     total: int

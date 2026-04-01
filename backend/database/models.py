@@ -23,6 +23,7 @@ class Video(Base):
     ml_approach = Column(String, nullable=True)
     processing_started_at = Column(DateTime, nullable=True)
     processing_finished_at = Column(DateTime, nullable=True)
+    output_dir = Column(String, nullable=True)       # path to pipeline intermediate files
 
     tap_events = relationship(
         "TapEvent", back_populates="video", cascade="all, delete-orphan",

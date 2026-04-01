@@ -4,12 +4,12 @@ import shutil
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.config import UPLOADS_DIR
-from backend.database.connection import get_db
+from backend.database.connection import get_db, SessionLocal
 from backend.database.models import Video, TapEvent
 from backend.database.schemas import (
     VideoUploadResponse,
@@ -78,6 +78,7 @@ def get_video_status(video_id: int, db: Session = Depends(get_db)):
         ml_approach=video.ml_approach,
         processing_started_at=video.processing_started_at,
         processing_finished_at=video.processing_finished_at,
+        output_dir=video.output_dir,
         tap_a_count=tap_a_count,
         tap_b_count=tap_b_count,
         total=tap_a_count + tap_b_count,
@@ -98,3 +99,30 @@ def delete_video(video_id: int, db: Session = Depends(get_db)):
 
     db.delete(video)  # cascade deletes tap_events
     db.commit()
+
+
+def _run_processing(video_id: int, roi_config: str):
+    """Background task wrapper — creates its own DB session."""
+    from backend.services.processor import process_video
+    db = SessionLocal()
+    try:
+        process_video(video_id, db, roi_config=roi_config)
+    finally:
+        db.close()
+
+
+@router.post("/{video_id}/process", status_code=202)
+def start_processing(
+    video_id: int,
+    background_tasks: BackgroundTasks,
+    roi_config: str = Query("default"),
+    db: Session = Depends(get_db),
+):
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(404, "Video not found")
+    if video.status == "processing":
+        raise HTTPException(409, "Video is already being processed")
+
+    background_tasks.add_task(_run_processing, video_id, roi_config)
+    return {"message": "Processing started", "video_id": video_id}
