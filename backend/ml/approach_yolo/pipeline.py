@@ -23,6 +23,7 @@ python scripts/run_yolo_pipeline.py --config config/pipeline.yaml --force
 """
 
 import json
+import logging
 import shutil
 import argparse
 import sys
@@ -36,6 +37,8 @@ from backend.ml.common import (
     crop_normalized, select_tap_bboxes_interactive,
 )
 
+
+logger = logging.getLogger(__name__)
 
 STAGES = ["roi_selection", "yolo_tracking", "relink", "sam3_tap_tracking"]
 
@@ -93,10 +96,10 @@ def stage_roi_selection(cfg: dict, interactive: bool = False, force: bool = Fals
                 # Copy into current output dir for traceability
                 if ext_path.resolve() != roi_json.resolve():
                     shutil.copy2(ext_path, roi_json)
-                print(f"ROI loaded from external file: {ext_path}")
+                logger.info("ROI loaded from external file: %s", ext_path)
                 return
         else:
-            print(f"WARNING: roi_json path not found: {ext_path}, falling back to defaults.")
+            logger.warning("roi_json path not found: %s, falling back to defaults", ext_path)
 
     # Skip if already done and not forced (divider is optional)
     if roi_json.exists() and not force and not interactive:
@@ -106,7 +109,7 @@ def stage_roi_selection(cfg: dict, interactive: bool = False, force: bool = Fals
             cfg["_tap_divider"] = tuple(data["tap_divider"]) if "tap_divider" in data else None
             if "sam3_tap_bboxes" in data:
                 cfg.setdefault("sam3", {})["tap_bboxes"] = data["sam3_tap_bboxes"]
-            print(f"ROI already resolved in {roi_json}, skipping.")
+            logger.info("ROI already resolved in %s, skipping", roi_json)
             return
 
     # Read first frame
@@ -114,7 +117,7 @@ def stage_roi_selection(cfg: dict, interactive: bool = False, force: bool = Fals
     ret, frame_0 = cap.read()
     cap.release()
     if not ret:
-        print(f"ERROR: Could not read {video_path}")
+        logger.error("Could not read %s", video_path)
         sys.exit(1)
 
     # -- Window 1: crop region (full frame, normalised) ---------------------
@@ -133,9 +136,9 @@ def stage_roi_selection(cfg: dict, interactive: bool = False, force: bool = Fals
         existing = load_roi_config(roi_json)
         if "sam3_tap_bboxes" in existing and not interactive:
             tap_bboxes = existing["sam3_tap_bboxes"]
-            print(f"SAM3 tap bboxes loaded from {roi_json}")
+            logger.info("SAM3 tap bboxes loaded from %s", roi_json)
         else:
-            print("Opening TAP_A / TAP_B bbox selectors on cropped frame ...")
+            logger.info("Opening TAP_A / TAP_B bbox selectors on cropped frame")
             crop = crop_normalized(frame_0, tap_roi)
             tap_bboxes = select_tap_bboxes_interactive(crop, object_labels)
 
@@ -146,7 +149,7 @@ def stage_roi_selection(cfg: dict, interactive: bool = False, force: bool = Fals
     if tap_bboxes:
         save_data["sam3_tap_bboxes"] = tap_bboxes
     roi_json.write_text(json.dumps(save_data, indent=2))
-    print(f"ROI config saved to {roi_json}")
+    logger.info("ROI config saved to %s", roi_json)
 
     cfg["_tap_roi"] = tap_roi
     cfg["_tap_divider"] = tap_divider
@@ -166,7 +169,7 @@ def stage_yolo_tracking(cfg: dict, force: bool = False):
 
     raw_csv = output_dir / "raw_detections.csv"
     if raw_csv.exists() and not force:
-        print(f"raw_detections.csv already exists at {raw_csv}, skipping.")
+        logger.info("raw_detections.csv already exists at %s, skipping", raw_csv)
         return
 
     tap_roi, _ = _get_roi(cfg)
@@ -203,13 +206,13 @@ def stage_relink(cfg: dict, force: bool = False):
     pour_json = output_dir / "pour_events.json"
     if relinked_csv.exists() and pour_json.exists() and not force:
         import json
-        print(f"relinked_detections.csv already exists at {relinked_csv}, skipping.")
+        logger.info("relinked_detections.csv already exists at %s, skipping", relinked_csv)
         cfg["_pour_events"] = json.loads(pour_json.read_text())
         return
 
     raw_csv = output_dir / "raw_detections.csv"
     if not raw_csv.exists():
-        print(f"ERROR: {raw_csv} not found. Run yolo_tracking stage first.")
+        logger.error("%s not found. Run yolo_tracking stage first.", raw_csv)
         sys.exit(1)
 
     record_range = relink_cfg.get("record_range")
@@ -250,7 +253,7 @@ def stage_sam3_tap_tracking(cfg: dict, interactive: bool = False, force: bool = 
 
     centroids_csv = output_dir / "sam3_centroids.csv"
     if centroids_csv.exists() and not force:
-        print(f"sam3_centroids.csv already exists at {centroids_csv}, skipping.")
+        logger.info("sam3_centroids.csv already exists at %s, skipping", centroids_csv)
         return
 
     tap_roi, _ = _get_roi(cfg)
@@ -264,7 +267,7 @@ def stage_sam3_tap_tracking(cfg: dict, interactive: bool = False, force: bool = 
         data = load_roi_config(roi_json)
         if "sam3_tap_bboxes" in data:
             tap_bboxes = data["sam3_tap_bboxes"]
-            print(f"SAM3 tap bboxes loaded from {roi_json}")
+            logger.info("SAM3 tap bboxes loaded from %s", roi_json)
         elif interactive:
             cap = cv2.VideoCapture(str(video_path))
             ret, frame_0 = cap.read()
@@ -273,9 +276,9 @@ def stage_sam3_tap_tracking(cfg: dict, interactive: bool = False, force: bool = 
             tap_bboxes = select_tap_bboxes_interactive(crop, object_labels)
             data["sam3_tap_bboxes"] = tap_bboxes
             roi_json.write_text(_json.dumps(data, indent=2))
-            print(f"SAM3 tap bboxes saved to {roi_json}")
+            logger.info("SAM3 tap bboxes saved to %s", roi_json)
         else:
-            print("ERROR: No SAM3 tap bboxes found. Run with --interactive or set in config.")
+            logger.error("No SAM3 tap bboxes found. Run with --interactive or set in config.")
             sys.exit(1)
 
     # Load pour frame ranges from relink stage (for selective video output)
@@ -284,7 +287,7 @@ def stage_sam3_tap_tracking(cfg: dict, interactive: bool = False, force: bool = 
     if ranges_path.exists():
         ranges_data = _json.loads(ranges_path.read_text())
         frame_ranges = [(r["start_frame"], r["end_frame"]) for r in ranges_data]
-        print(f"SAM3 will output video for {len(frame_ranges)} pour segment(s)")
+        logger.info("SAM3 will output video for %d pour segment(s)", len(frame_ranges))
 
     run_sam3_video_tracking(
         video_path=video_path,
@@ -313,7 +316,7 @@ def _get_roi(cfg: dict) -> tuple[tuple, tuple | None]:
     roi_json = output_dir / "tap_roi.json"
     data = load_roi_config(roi_json)
     if "tap_roi" not in data:
-        print(f"ERROR: No ROI found. Run roi_selection stage first.")
+        logger.error("No ROI found. Run roi_selection stage first.")
         sys.exit(1)
     tap_roi = tuple(data["tap_roi"])
     tap_divider = tuple(data["tap_divider"]) if "tap_divider" in data else None

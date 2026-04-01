@@ -29,6 +29,7 @@ python 03_YOLO_track.py --video ../data/videos/cerveza2.mp4 --output ../results/
 
 import argparse
 import json
+import logging
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -41,6 +42,8 @@ from ultralytics import YOLO, YOLOWorld
 from backend.ml.common import (
     select_roi_interactive, crop_normalized, savefig,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -127,7 +130,7 @@ def run_yolo_tracking(
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = total_frames / fps
-    print(f"{video_path.name}: {fps:.0f} fps  {total_frames} frames  {duration:.1f}s")
+    logger.info("%s: %.0f fps  %d frames  %.1fs", video_path.name, fps, total_frames, duration)
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     ret, frame_0 = cap.read()
@@ -139,8 +142,8 @@ def run_yolo_tracking(
         frame_preview = frame_0  # fallback to first frame
     cap.release()
 
-    print(f"Frame 0: {frame_0.shape}  "
-          f"Preview frame ({preview_second:.0f}s): {frame_preview.shape}")
+    logger.debug("Frame 0: %s  Preview frame (%.0fs): %s",
+                 frame_0.shape, preview_second, frame_preview.shape)
 
     # -- Crop preview frames ------------------------------------------------
     crop_0 = crop_normalized(frame_0, tap_roi)
@@ -159,17 +162,16 @@ def run_yolo_tracking(
     # -- Load YOLO ----------------------------------------------------------
     is_world = "world" in str(model_name).lower()
     if is_world:
-        print(f"\nLoading YOLO-World model: {model_name}")
+        logger.info("Loading YOLO-World model: %s", model_name)
         model = YOLOWorld(model_name)
         model.set_classes(classes)
-        print(f"  Detecting classes: {classes}")
+        logger.info("Detecting classes: %s", classes)
     else:
-        print(f"\nLoading YOLO model: {model_name}")
+        logger.info("Loading YOLO model: %s", model_name)
         model = YOLO(model_name)
 
     # -- Full-video tracking ------------------------------------------------
-    print(f"\nTracking video every {sample_every} frame(s) "
-          f"with {tracker} ...")
+    logger.info("Tracking video every %d frame(s) with %s", sample_every, tracker)
     cap = cv2.VideoCapture(str(video_path))
     frame_idx = 0
     all_detections = []          # (frame, time, class, conf, track_id, x1, y1, x2, y2)
@@ -182,9 +184,8 @@ def run_yolo_tracking(
     if record_range:
         rec_start_frame = int(record_range[0] * fps)
         rec_stop_frame = int(record_range[1] * fps)
-        print(f"Recording annotated video: {record_range[0]:.1f}s -> "
-              f"{record_range[1]:.1f}s  "
-              f"(frames {rec_start_frame}-{rec_stop_frame})")
+        logger.info("Recording annotated video: %.1fs -> %.1fs (frames %d-%d)",
+                    record_range[0], record_range[1], rec_start_frame, rec_stop_frame)
 
     while True:
         ret, frame = cap.read()
@@ -231,21 +232,21 @@ def run_yolo_tracking(
                     video_writer = cv2.VideoWriter(str(rec_path), fourcc,
                                                    fps / sample_every,
                                                    (w_out, h_out))
-                    print(f"  Video writer opened: {rec_path} ({w_out}x{h_out})")
+                    logger.debug("Video writer opened: %s (%dx%d)", rec_path, w_out, h_out)
                 video_writer.write(annotated)
 
             if frame_idx % (sample_every * 100) == 0:
-                print(f"  Frame {frame_idx}/{total_frames}  "
-                      f"tracks so far: {len(track_data)}", end="\r")
+                logger.debug("Frame %d/%d  tracks so far: %d",
+                            frame_idx, total_frames, len(track_data))
 
         frame_idx += 1
 
     cap.release()
     if video_writer is not None:
         video_writer.release()
-        print(f"  Annotated video saved to {output_dir / 'annotated_clip.mp4'}")
-    print(f"\nTotal detections: {len(all_detections)}  "
-          f"Unique track IDs: {len(track_data)}")
+        logger.info("Annotated video saved to %s", output_dir / 'annotated_clip.mp4')
+    logger.info("Total detections: %d  Unique track IDs: %d",
+                len(all_detections), len(track_data))
 
     # -- Save raw detections to CSV -----------------------------------------
     raw_csv = output_dir / "raw_detections.csv"
@@ -255,7 +256,7 @@ def run_yolo_tracking(
             fidx, t_s, name, conf, tid, x1, y1, x2, y2 = det
             f.write(f"{fidx},{t_s:.4f},{name},{conf:.4f},{tid},"
                     f"{x1:.2f},{y1:.2f},{x2:.2f},{y2:.2f}\n")
-    print(f"Raw detections saved to {raw_csv}")
+    logger.info("Raw detections saved to %s", raw_csv)
 
     # -- Detection timeline -------------------------------------------------
     det_times: dict = {}
@@ -282,15 +283,13 @@ def run_yolo_tracking(
         cy = (bboxes[:, 1] + bboxes[:, 3]) / 2
         td["movement"] = float(np.sqrt(cx.std() ** 2 + cy.std() ** 2))
 
-    print(f"\nFound {len(cup_tracks)} cup tracks (by YOLO track ID)")
+    logger.info("Found %d cup tracks (by YOLO track ID)", len(cup_tracks))
     for tid in sorted(cup_tracks.keys()):
         td = cup_tracks[tid]
         dur = td["times"][-1] - td["times"][0]
-        print(f"  ID {tid:3d}: "
-              f"{td['times'][0]:.1f}s -> {td['times'][-1]:.1f}s  "
-              f"dur={dur:.1f}s  dets={len(td['frames'])}  "
-              f"move={td['movement']:.1f}px  "
-              f"avg_conf={np.mean(td['confs']):.2f}")
+        logger.debug("  ID %3d: %.1fs -> %.1fs  dur=%.1fs  dets=%d  move=%.1fpx  avg_conf=%.2f",
+                     tid, td['times'][0], td['times'][-1], dur, len(td['frames']),
+                     td['movement'], np.mean(td['confs']))
 
     # -- Cup track timeline -------------------------------------------------
     sorted_tids = sorted(cup_tracks.keys())
@@ -324,8 +323,8 @@ def run_yolo_tracking(
     }
     summary_path = output_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2))
-    print(f"\nSummary saved to {summary_path}")
-    print(f"All outputs written to: {output_dir}/")
+    logger.info("Summary saved to %s", summary_path)
+    logger.info("All outputs written to: %s/", output_dir)
 
     return raw_csv
 

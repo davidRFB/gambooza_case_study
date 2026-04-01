@@ -15,6 +15,7 @@ Or imported by pipeline.py:
 """
 
 import argparse
+import logging
 from pathlib import Path
 
 import cv2
@@ -25,6 +26,8 @@ from backend.ml.common import (
     crop_normalized, export_cropped_video, savefig,
     select_tap_bboxes_interactive,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -75,10 +78,10 @@ def run_sam3_video_tracking(
 
     cropped_video_path = output_dir / "cropped_for_sam3.mp4"
     if not cropped_video_path.exists():
-        print("\nExporting cropped video for SAM3...")
+        logger.info("Exporting cropped video for SAM3...")
         export_cropped_video(video_path, cropped_video_path, tap_roi, fps)
     else:
-        print(f"\nUsing existing cropped video: {cropped_video_path}")
+        logger.info("Using existing cropped video: %s", cropped_video_path)
 
     # -- Read first frame for dimensions ------------------------------------
     cap = cv2.VideoCapture(str(cropped_video_path))
@@ -97,14 +100,14 @@ def run_sam3_video_tracking(
         video_frame_set = set()
         for rng_start, rng_end in frame_ranges:
             video_frame_set.update(range(rng_start, rng_end + 1))
-        print(f"\nCropped video: {vid_w}x{vid_h}, {total_frames} frames, {fps:.1f} fps")
-        print(f"  frame_ranges: {len(frame_ranges)} segment(s), "
-              f"{len(video_frame_set)} frames for output video")
+        logger.info("Cropped video: %dx%d, %d frames, %.1f fps", vid_w, vid_h, total_frames, fps)
+        logger.info("  frame_ranges: %d segment(s), %d frames for output video",
+                    len(frame_ranges), len(video_frame_set))
     else:
-        print(f"\nCropped video: {vid_w}x{vid_h}, {total_frames} frames, {fps:.1f} fps")
+        logger.info("Cropped video: %dx%d, %d frames, %.1f fps", vid_w, vid_h, total_frames, fps)
 
     for label, bbox in zip(object_labels, tap_bboxes):
-        print(f"  [{label}] bbox -> {[round(v, 1) for v in bbox]}")
+        logger.info("  [%s] bbox -> %s", label, [round(v, 1) for v in bbox])
 
     # -- Initialize SAM3VideoPredictor --------------------------------------
     overrides = dict(
@@ -117,7 +120,7 @@ def run_sam3_video_tracking(
 
     predictor = SAM3VideoPredictor(overrides=overrides)
 
-    print(f"\nTracking with SAM3 (every {frame_skip} frames)...")
+    logger.info("Tracking with SAM3 (every %d frames)...", frame_skip)
     results = predictor(
         source=str(cropped_video_path),
         bboxes=tap_bboxes,
@@ -174,12 +177,12 @@ def run_sam3_video_tracking(
             out_video.write(overlay)
 
         if save_snapshot_every > 0 and frame_idx % save_snapshot_every == 0:
-            print(f"  {frame_idx}/{total_frames}")
+            logger.debug("  %d/%d", frame_idx, total_frames)
             if write_frame:
                 cv2.imwrite(str(frames_dir / f"frame_{frame_idx:05d}.png"), overlay)
 
     out_video.release()
-    print(f"\nSAM3 tracked video saved to {out_video_path}")
+    logger.info("SAM3 tracked video saved to %s", out_video_path)
 
     # -- Save centroid trajectories -----------------------------------------
     all_rows = []
@@ -197,9 +200,9 @@ def run_sam3_video_tracking(
     if all_rows:
         df = pd.DataFrame(all_rows)
         df.to_csv(csv_path, index=False)
-        print(f"Centroid trajectories saved to {csv_path}")
+        logger.info("Centroid trajectories saved to %s", csv_path)
     else:
-        print("WARNING: No centroids detected.")
+        logger.warning("No centroids detected.")
         pd.DataFrame(columns=["frame", "time_s", "label", "centroid_x", "centroid_y"]).to_csv(
             csv_path, index=False)
 

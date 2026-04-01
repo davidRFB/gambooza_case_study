@@ -42,6 +42,7 @@ python notebooks/05_relink_coexistence.py \
 
 import argparse
 import json
+import logging
 from itertools import combinations
 from pathlib import Path
 
@@ -51,6 +52,8 @@ import numpy as np
 import pandas as pd
 
 from backend.ml.common import crop_normalized, savefig
+
+logger = logging.getLogger(__name__)
 
 # ── Defaults ────────────────────────────────────────────────────────────────
 
@@ -219,14 +222,10 @@ def render_annotated_video(video_path: Path, output_dir: Path,
                            frame_ranges: list[tuple[int, int]],
                            df: pd.DataFrame,
                            filename: str = "relinked_clip.mp4"):
-    """Render annotated video for specific frame ranges with relinked detections.
-
-    *frame_ranges* is a list of (start_frame, end_frame) tuples. Only frames
-    within these ranges are rendered, concatenated into a single output video.
-    """
+    """Render annotated video for specific frame ranges with relinked detections."""
     roi_json = output_dir / "tap_roi.json"
     if not roi_json.exists():
-        print(f"  WARNING: {roi_json} not found — cannot crop. Skipping video.")
+        logger.warning("%s not found — cannot crop. Skipping video.", roi_json)
         return
     roi_cfg = json.loads(roi_json.read_text())
     tap_roi = tuple(roi_cfg["tap_roi"])
@@ -239,8 +238,8 @@ def render_annotated_video(video_path: Path, output_dir: Path,
     for start, stop in frame_ranges:
         needed_frames.update(range(start, min(stop + 1, total_frames)))
 
-    print(f"\nRendering annotated video for {len(frame_ranges)} segment(s) "
-          f"({len(needed_frames)} frames total)")
+    logger.info("Rendering annotated video for %d segment(s) (%d frames total)",
+                len(frame_ranges), len(needed_frames))
 
     frame_dets: dict[int, pd.DataFrame] = {}
     for f, grp in df.groupby("frame"):
@@ -277,13 +276,13 @@ def render_annotated_video(video_path: Path, output_dir: Path,
                 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
                 video_writer = cv2.VideoWriter(str(rec_path), fourcc, fps,
                                                (w_out, h_out))
-                print(f"  Video writer opened: {rec_path} ({w_out}x{h_out})")
+                logger.debug("Video writer opened: %s (%dx%d)", rec_path, w_out, h_out)
             video_writer.write(crop)
 
     cap.release()
     if video_writer is not None:
         video_writer.release()
-        print(f"  Annotated video saved to {rec_path}")
+        logger.info("Annotated video saved to %s", rec_path)
 
 
 # ── Core relink function (importable by pipeline.py) ───────────────────────
@@ -317,24 +316,24 @@ def run_relink(
     df["cy"] = (df["y1"] + df["y2"]) / 2
 
     cups = df[df["class"] == "cup"].copy()
-    print(f"Loaded {len(df)} detections  |  {len(cups)} cup rows")
+    logger.info("Loaded %d detections  |  %d cup rows", len(df), len(cups))
 
     # ── 2. Per-track summaries ──────────────────────────────────────────
     info = build_track_info(cups, min_track_dets)
     tids = sorted(info.keys())
-    print(f"\n{len(tids)} cup tracks (≥ {min_track_dets} detections):")
+    logger.info("%d cup tracks (>= %d detections)", len(tids), min_track_dets)
     for tid in tids:
         t = info[tid]
-        print(f"  Track {tid:3d}: frames {t['first_frame']:4d}–{t['last_frame']:4d}  "
-              f"dets={t['n_dets']:4d}  "
-              f"median=({t['median_cx']:.0f}, {t['median_cy']:.0f})")
+        logger.debug("  Track %3d: frames %4d-%4d  dets=%4d  median=(%.0f, %.0f)",
+                     tid, t['first_frame'], t['last_frame'], t['n_dets'],
+                     t['median_cx'], t['median_cy'])
 
     # ── 3. Temporal incompatibility graph ───────────────────────────────
     incompat = build_incompatibility(tids, info, overlap_threshold)
-    print(f"\nIncompatible pairs (overlap > {overlap_threshold} frames):")
+    logger.info("Incompatible pairs (overlap > %d frames): %d", overlap_threshold, len(incompat))
     for a, b in sorted(incompat):
         overlap = len(info[a]["frames"] & info[b]["frames"])
-        print(f"  {a:3d} ↔ {b:3d}  ({overlap} frames overlap)")
+        logger.debug("  %3d <-> %3d  (%d frames overlap)", a, b, overlap)
 
     # ── 4. Greedy coexistence grouping ──────────────────────────────────
     groups = greedy_coexistence_groups(tids, info, incompat)
@@ -345,15 +344,15 @@ def run_relink(
         for tid in group:
             mapping[tid] = canonical
 
-    print(f"\nGrouping: {len(tids)} tracks → {len(groups)} physical cups")
+    logger.info("Grouping: %d tracks -> %d physical cups", len(tids), len(groups))
     for group in sorted(groups, key=lambda g: min(g)):
         canonical = min(group)
         chain = sorted(group, key=lambda t: info[t]["first_frame"])
         total_dets = sum(info[t]["n_dets"] for t in group)
         if len(group) > 1:
-            print(f"  Cup {canonical:3d} ← {chain}  ({total_dets} dets)")
+            logger.debug("  Cup %3d <- %s  (%d dets)", canonical, chain, total_dets)
         else:
-            print(f"  Cup {canonical:3d}    (solo, {total_dets} dets)")
+            logger.debug("  Cup %3d    (solo, %d dets)", canonical, total_dets)
 
     # ── 5. Apply mapping ────────────────────────────────────────────────
     df["original_track_id"] = df["track_id"]
@@ -395,7 +394,7 @@ def run_relink(
     if interp_rows:
         df = pd.concat([df, pd.DataFrame(interp_rows)], ignore_index=True)
         df = df.sort_values(["frame", "track_id"]).reset_index(drop=True)
-    print(f"\nInterpolated {len(interp_rows)} rows across short gaps")
+    logger.info("Interpolated %d rows across short gaps", len(interp_rows))
 
     # Recompute centres (needed for interpolated rows)
     df["cx"] = (df["x1"] + df["x2"]) / 2
@@ -408,11 +407,11 @@ def run_relink(
     df[out_cols].to_csv(out_csv, index=False)
 
     relinked_cups = df[df["class"] == "cup"]
-    print(f"\nSaved {out_csv}")
-    print(f"  Total rows:       {len(df)}")
-    print(f"  Cup rows:         {len(relinked_cups)} "
-          f"({relinked_cups['interpolated'].sum()} interpolated)")
-    print(f"  Unique cup IDs:   {sorted(relinked_cups['track_id'].unique())}")
+    logger.info("Saved %s", out_csv)
+    logger.info("  Total rows: %d  Cup rows: %d (%d interpolated)  Unique cup IDs: %s",
+                len(df), len(relinked_cups),
+                int(relinked_cups['interpolated'].sum()),
+                sorted(relinked_cups['track_id'].unique()))
 
     # ── 8. Pour classification ──────────────────────────────────────────
     # Determine FPS from the data (time_s / frame)
@@ -425,10 +424,10 @@ def run_relink(
     pour_events: list[dict] = []
     tids_after = sorted(relinked_cups["track_id"].unique())
 
-    print(f"\nPour classification (min_frames={min_pour_frames}, "
-          f"movement_threshold={movement_threshold:.1f}px, "
-          f"stationary_ratio={stationary_ratio:.0%}, "
-          f"stationary_px={stationary_px:.0f}px):")
+    logger.info("Pour classification (min_frames=%d, movement=%.1fpx, "
+                "stationary_ratio=%.0f%%, stationary_px=%.0fpx)",
+                min_pour_frames, movement_threshold,
+                stationary_ratio * 100, stationary_px)
     for tid in tids_after:
         sub = relinked_cups[relinked_cups["track_id"] == tid].sort_values("frame")
         n_frames = len(sub)
@@ -460,9 +459,10 @@ def run_relink(
         time_start = float(sub["time_s"].iloc[0])
         time_end = float(sub["time_s"].iloc[-1])
 
-        print(f"  Cup {tid:3d}: {time_start:.1f}s→{time_end:.1f}s  "
-              f"frames={n_frames}  move={movement:.1f}px  "
-              f"stationary={frac_stationary:.0%}  → {status}")
+        logger.debug("  Cup %3d: %.1fs->%.1fs  frames=%d  move=%.1fpx  "
+                     "stationary=%.0f%%  -> %s",
+                     tid, time_start, time_end, n_frames, movement,
+                     frac_stationary * 100, status)
 
         if is_pour:
             pour_events.append({
@@ -475,12 +475,12 @@ def run_relink(
                 "movement": movement,
             })
 
-    print(f"\nTotal pour events: {len(pour_events)}")
+    logger.info("Total pour events: %d", len(pour_events))
 
     # Save pour events JSON
     pour_json_path = output_dir / "pour_events.json"
     pour_json_path.write_text(json.dumps(pour_events, indent=2))
-    print(f"Pour events saved to {pour_json_path}")
+    logger.info("Pour events saved to %s", pour_json_path)
 
     # ── 9. Before / after timeline ──────────────────────────────────────
     cups_before = pd.read_csv(input_csv)
@@ -578,11 +578,11 @@ def run_relink(
             else:
                 merged_ranges.append((start, end))
 
-        print(f"\nAuto-video: {len(merged_ranges)} segment(s) with "
-              f"{video_padding:.1f}s padding")
+        logger.info("Auto-video: %d segment(s) with %.1fs padding",
+                    len(merged_ranges), video_padding)
         for i, (s, e) in enumerate(merged_ranges):
-            print(f"  Segment {i}: frames {s}–{e} "
-                  f"({s / fps_est:.1f}s → {e / fps_est:.1f}s)")
+            logger.debug("  Segment %d: frames %d-%d (%.1fs -> %.1fs)",
+                        i, s, e, s / fps_est, e / fps_est)
 
         render_annotated_video(video_path, output_dir, merged_ranges, df,
                                filename="relinked_pour_clip.mp4")
@@ -593,7 +593,7 @@ def run_relink(
             [{"start_frame": s, "end_frame": e} for s, e in merged_ranges],
             indent=2,
         ))
-        print(f"Pour frame ranges saved to {ranges_path}")
+        logger.info("Pour frame ranges saved to %s", ranges_path)
 
     elif record_range:
         # Fallback: use explicit record_range (backward compat)
@@ -606,11 +606,8 @@ def run_relink(
             render_annotated_video(video_path, output_dir,
                                    [(rec_start, rec_stop)], df)
 
-    print(f"\n{'=' * 60}")
-    print(f"  BEFORE: {n_before} cup track IDs")
-    print(f"  AFTER:  {n_after} physical cups")
-    print(f"  POURS:  {len(pour_events)}")
-    print(f"{'=' * 60}")
+    logger.info("Relink complete: BEFORE=%d track IDs  AFTER=%d physical cups  POURS=%d",
+                n_before, n_after, len(pour_events))
 
     return out_csv, pour_events
 
@@ -634,7 +631,7 @@ def main():
         video_path=args.video if hasattr(args, "video") and args.video else None,
         record_range=tuple(args.record_range) if args.record_range else None,
     )
-    print(f"\n{len(pour_events)} pour event(s) detected.")
+    logger.info("%d pour event(s) detected.", len(pour_events))
 
 
 if __name__ == "__main__":

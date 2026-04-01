@@ -1,5 +1,6 @@
 """Count endpoints — query and summary."""
 
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
@@ -9,6 +10,8 @@ from sqlalchemy.orm import Session
 from backend.database.connection import get_db
 from backend.database.models import Video, TapEvent
 from backend.database.schemas import CountResult, CountSummary
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 

@@ -52,9 +52,15 @@ gambooza_case_study/
 │   ├── test_schemas.py             # Pydantic schema validation
 │   ├── test_videos_router.py       # Upload, list, status, delete, process endpoints
 │   ├── test_counts_router.py       # Counts query and summary endpoints
-│   └── test_processor.py           # ROI config loader, YOLO config builder, event mapper
+│   ├── test_processor.py           # ROI config loader, YOLO config builder, event mapper
+│   └── test_api_client.py          # Frontend API client (mocked HTTP calls)
 │
-├── frontend/                       # (TODO) Streamlit UI
+├── frontend/
+│   ├── app.py                      # Main Streamlit app (two tabs)
+│   ├── requirements.txt            # streamlit, requests
+│   └── utils/
+│       ├── __init__.py
+│       └── api_client.py           # Backend HTTP client (7 functions)
 │
 ├── scripts/
 │   ├── run_simple.py               # CLI: run SimpleDetector on a video
@@ -313,67 +319,63 @@ Named JSON files with ROI coordinates for different camera setups:
 
 ---
 
-## 5. Frontend — Streamlit
+## 5. Frontend — Streamlit (DONE)
 
 ### Layout (`frontend/app.py`)
+
+Two-tab layout:
 
 ```
 Page: Beer Tap Counter
 │
-├── Sidebar
-│   ├── Upload Section
-│   │   ├── st.file_uploader (accept mp4, mov)
-│   │   └── Upload button → POST /api/videos/upload
-│   └── History Section
-│       └── st.selectbox listing past videos → GET /api/videos/
+├── Tab 1: Upload & Process
+│   ├── Recent videos list (last 5, with status icons)
+│   ├── File uploader (mp4/mov) — auto-uploads on file select
+│   │   └── Auto-triggers processing (or queues if another is running)
+│   └── Active video status:
+│       ├── If pending/queued: warning + "Refresh Status" button
+│       ├── If processing:     warning + "Refresh Status" button
+│       ├── If completed:      success + metrics (Tap A, Tap B, Total) + events table
+│       └── If error:          error message
 │
-├── Main Area
-│   ├── Status Banner
-│   │   ├── If pending:    "Ready to process" + [Process] button
-│   │   ├── If processing: spinner + auto-refresh (st.rerun with sleep)
-│   │   ├── If completed:  success banner
-│   │   └── If error:      error message display
-│   │
-│   ├── Results Section (only when completed)
-│   │   ├── Three columns:
-│   │   │   ├── st.metric("Tap A", count_a)
-│   │   │   ├── st.metric("Tap B", count_b)
-│   │   │   └── st.metric("Total", total)
-│   │   └── (Optional) Timeline table of individual events
-│   │
-│   └── (Optional) Video preview with st.video()
-│
-└── Footer
-    └── Query section: filter by date range, tap
+└── Tab 2: Dashboard
+    ├── Refresh button
+    ├── Global summary: 4x st.metric (Tap A Total, Tap B Total, Grand Total, Videos Processed)
+    └── Video list: expandable per video
+        ├── Completed: metrics + events table
+        ├── Error: error message
+        ├── Other: status info
+        └── Delete button per video
 ```
 
 ### API Client (`frontend/utils/api_client.py`)
 
-A thin wrapper using `requests` or `httpx`:
-- `upload_video(file) → VideoUploadResponse`
-- `process_video(video_id) → status_code`
-- `get_status(video_id) → VideoStatus`
-- `list_videos() → List[VideoSummary]`
-- `get_counts(filters) → List[CountResult]`
+Thin wrapper using `requests`, configured via `BACKEND_URL` env var (default `http://localhost:8000`):
 
-### Polling Strategy for Processing Status
+| Function | Endpoint | Returns |
+|----------|----------|---------|
+| `list_videos()` | GET /api/videos/ | list[dict] |
+| `get_video_status(video_id)` | GET /api/videos/{id}/status | dict |
+| `upload_video(name, file_bytes)` | POST /api/videos/upload | dict |
+| `process_video(video_id)` | POST /api/videos/{id}/process | HTTP status code |
+| `delete_video(video_id)` | DELETE /api/videos/{id} | bool |
+| `get_counts_summary()` | GET /api/counts/summary | dict |
+| `get_counts()` | GET /api/counts/ | list[dict] |
 
-```
-When user clicks "Process":
-    1. POST /api/videos/{id}/process
-    2. Enter polling loop:
-        - GET /api/videos/{id}/status every 2 seconds
-        - Show spinner + progress message
-        - Break when status is 'completed' or 'error'
-    3. Display results or error
-```
+### Queue Management (Frontend-side)
+
+Only one video processes at a time (GPU constraint). No backend changes needed:
+
+1. On upload, check `list_videos()` — if any video has `status == "processing"`, don't trigger process
+2. Video stays as "pending" with "queued" message
+3. On "Refresh Status" click, if nothing else is processing, auto-triggers the pending video
 
 ### UX Notes
 
-- Disable the Process button while status is 'processing'.
-- Show video metadata (filename, upload date, duration) in the history list.
-- Use `st.toast()` for success/error notifications.
-- Keep the UI minimal: no auth, no multi-user, no pagination needed.
+- File uploader hides while a video is processing (prevents confusion)
+- No auto-polling — user clicks "Refresh Status" manually (avoids jarring reloads)
+- `st.toast()` for upload/process/delete notifications
+- Delete available inside video expanders on Dashboard tab
 
 ---
 
@@ -551,7 +553,7 @@ python scripts/run_yolo_pipeline.py --config config/pipeline.yaml --force
 
 ## 7. Testing
 
-### Test Suite (34 tests)
+### Test Suite (44 tests)
 
 Run with: `source .venv-gambooza/bin/activate && python -m pytest tests/ -v`
 
@@ -563,6 +565,7 @@ Run with: `source .venv-gambooza/bin/activate && python -m pytest tests/ -v`
 | `test_videos_router.py` | 9 | Upload, reject bad extension, list, status, 404s, process 202, delete |
 | `test_counts_router.py` | 4 | Counts query, filter by tap, empty results, summary |
 | `test_processor.py` | 8 | ROI config loading/validation, YOLO config builder (mocked), event mapping |
+| `test_api_client.py` | 10 | Frontend API client: list, upload, process, status, delete (mocked HTTP) |
 
 ### Testing patterns
 
@@ -577,7 +580,8 @@ Run with: `source .venv-gambooza/bin/activate && python -m pytest tests/ -v`
 
 - **Python:** 3.11 via `.venv-gambooza` (managed with `uv`)
 - **Install deps:** `source .venv-gambooza/bin/activate && uv pip install -r requirements.txt`
-- **Run server:** `uvicorn backend.main:app --port 8000 --reload`
+- **Run backend:** `uvicorn backend.main:app --port 8000 --reload`
+- **Run frontend:** `cd frontend && streamlit run app.py`
 - **Run tests:** `python -m pytest tests/ -v`
 - **DB location:** `data/db_files/app.db` (delete to reset schema)
 
@@ -601,9 +605,9 @@ Notebook-based exploration → two production detectors:
 3. ✅ Counts router (query with filters, summary).
 4. ✅ Background processor service — bridges YOLO pipeline to DB.
 5. ✅ ROI config system — named JSON configs for different camera setups.
-6. ✅ 34 tests covering all layers.
+6. ✅ 44 tests covering all layers (including frontend api_client).
 7. ✅ End-to-end tested: upload → process → completed with tap events.
-8. 🔲 Build Streamlit UI (`frontend/`).
+8. ✅ Streamlit UI — two tabs (Upload & Process, Dashboard), queue management, delete.
 9. 🔲 Create Dockerfiles and docker-compose.yml.
 
 ### Phase 3: Polish
@@ -642,7 +646,7 @@ These should go in the README or be prepared as talking points:
 Before the presentation, verify:
 
 - [x] Backend starts without errors: `uvicorn backend.main:app --port 8000`
-- [x] All 34 tests pass: `python -m pytest tests/ -v`
+- [x] All 44 tests pass: `python -m pytest tests/ -v`
 - [x] Upload a video: `POST /api/videos/upload`
 - [x] Processing starts: `POST /api/videos/{id}/process` returns 202
 - [x] Processing completes: status updates to 'completed'
@@ -676,6 +680,13 @@ sqlalchemy
 aiofiles
 python-multipart
 pyyaml
+```
+
+### Frontend (`frontend/requirements.txt`)
+
+```
+streamlit>=1.30
+requests>=2.31
 ```
 
 ### Test dependencies

@@ -8,6 +8,7 @@ Stages: ROI selection → YOLO tracking → Relink → SAM3 tap tracking → Tap
 """
 
 import json
+import logging
 from dataclasses import dataclass, asdict
 from pathlib import Path
 import time
@@ -31,6 +32,9 @@ class YOLODetectorResult:
         return asdict(self)
 
 
+logger = logging.getLogger(__name__)
+
+
 class YOLODetector:
     """GPU-accelerated beer tap counter using YOLO-World + SAM3."""
 
@@ -52,6 +56,7 @@ class YOLODetector:
         stage : run only this stage (None = all)
         """
 
+        logger.info("YOLODetector.run() starting (config=%s)", self.config_path)
         cfg = load_config(self.config_path)
 
         if interactive:
@@ -69,9 +74,11 @@ class YOLODetector:
             if stage and stage != stage_name:
                 continue
             if not stages_enabled.get(stage_name, True):
+                logger.debug("Stage '%s' disabled, skipping", stage_name)
                 continue
 
             func = STAGE_FUNCS[stage_name]
+            logger.info("Stage '%s' starting", stage_name)
             t0 = time.time()
 
             if stage_name in ("roi_selection", "sam3_tap_tracking"):
@@ -79,7 +86,9 @@ class YOLODetector:
             else:
                 func(cfg, force=force)
 
-            stage_times[stage_name] = round(time.time() - t0, 3)
+            elapsed = round(time.time() - t0, 3)
+            stage_times[stage_name] = elapsed
+            logger.info("Stage '%s' completed in %.3fs", stage_name, elapsed)
 
         total_elapsed = round(time.time() - t_pipeline, 3)
 
@@ -93,12 +102,16 @@ class YOLODetector:
             assigned_path = output_dir / "pour_events_assigned.json"
             assigned_path.write_text(json.dumps(assigned_pours, indent=2))
             pours = assigned_pours
+            logger.info("Tap assignment completed: %d events", len(pours))
         else:
             pours = json.loads(pour_json.read_text()) if pour_json.exists() else []
+            logger.warning("Tap assignment returned None, using raw pour events")
 
         tap_a = sum(1 for p in pours if p.get("tap") == "TAP_A")
         tap_b = sum(1 for p in pours if p.get("tap") == "TAP_B")
         unknown = len(pours) - tap_a - tap_b
+        logger.info("Results: Tap A=%d, Tap B=%d, Unknown=%d, Total=%d (%.3fs)",
+                     tap_a, tap_b, unknown, len(pours), total_elapsed)
 
         return YOLODetectorResult(
             tap_a_count=tap_a,

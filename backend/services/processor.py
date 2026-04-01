@@ -1,6 +1,7 @@
 """Background video processing — runs ML pipeline and saves results to DB."""
 
 import json
+import logging
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +11,8 @@ from sqlalchemy.orm import Session
 
 from backend.config import UPLOADS_DIR, ROI_CONFIGS_DIR, YOLO_BASE_CONFIG, RESULTS_DIR, PROJECT_ROOT
 from backend.database.models import Video, TapEvent as TapEventModel
+
+logger = logging.getLogger(__name__)
 
 
 def process_video(video_id: int, db: Session, roi_config: str = "default"):
@@ -21,13 +24,17 @@ def process_video(video_id: int, db: Session, roi_config: str = "default"):
     db : SQLAlchemy session
     roi_config : name of ROI config file in data/roi_configs/ (without .json)
     """
+    logger.info("process_video started: video_id=%d, roi_config=%s", video_id, roi_config)
+
     video = db.query(Video).filter(Video.id == video_id).first()
     if not video:
+        logger.warning("Video not found in DB: video_id=%d", video_id)
         return
 
     video.status = "processing"
     video.processing_started_at = datetime.utcnow()
     db.commit()
+    logger.info("Video %d status -> processing", video_id)
 
     try:
         video_path = UPLOADS_DIR / video.filename
@@ -36,21 +43,26 @@ def process_video(video_id: int, db: Session, roi_config: str = "default"):
 
         # Load ROI config
         roi = _load_roi_config(roi_config)
+        logger.info("ROI config '%s' loaded", roi_config)
 
         # Build temp YOLO config and run pipeline
         pour_events = _run_yolo_pipeline(video_path, video_id, roi)
+        logger.info("Pipeline returned %d pour events", len(pour_events))
 
         # Map results to DB
         tap_events_db = _map_pour_events(video_id, pour_events)
         db.add_all(tap_events_db)
+        logger.info("Saved %d tap events to DB", len(tap_events_db))
 
         video.status = "completed"
         video.ml_approach = "yolo"
         video.output_dir = str(RESULTS_DIR / f"web_{video_id}")
         video.processing_finished_at = datetime.utcnow()
         db.commit()
+        logger.info("Video %d status -> completed", video_id)
 
     except Exception as e:
+        logger.exception("Video %d processing failed: %s", video_id, e)
         video.status = "error"
         video.error_message = str(e)[:500]
         video.processing_finished_at = datetime.utcnow()

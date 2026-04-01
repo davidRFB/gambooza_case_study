@@ -60,3 +60,23 @@ BACKEND TODOs
 - [ ] Add a /api/videos/{id}/reprocess endpoint that clears old events + reruns
 - [ ] Clean up results/web_{id}/ on video delete
 - [ ] Set duration_sec from pipeline output after processing
+
+## Frontend TODOs & Considerations
+- [ ] Error handling — if backend is offline, API calls crash the UI. Wrap in
+      try/except and show st.error("Backend unavailable") instead.
+- [ ] Queue is frontend-only and single-slot — if user opens two browser tabs,
+      both could trigger processing simultaneously. For demo this is fine.
+- [ ] get_video_status is called per-video in Dashboard loop — if many videos,
+      this causes N API calls on every page load. Could add a batch endpoint
+      or cache with st.cache_data (short TTL).
+- [ ] No progress indicator during processing — only "Processing..." + manual
+      refresh. Could add a progress bar if backend reported stage completion.
+- [ ] File uploader resets on st.rerun() — tracked via last_uploaded_name in
+      session_state to prevent re-upload, but the widget visually clears.
+- [ ] No video preview — could add st.video() for uploaded files.
+- [ ] No date/tap filtering in Dashboard — counts endpoint supports it but
+      the UI doesn't expose filters yet.
+- [ ] Delete confirmation — currently deletes immediately on button click.
+      Could add a confirmation dialog.
+- [ ] Styling — currently uses default Streamlit theme. Could add custom CSS
+      or a .streamlit/config.toml for branding.

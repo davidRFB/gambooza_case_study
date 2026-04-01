@@ -1,5 +1,6 @@
 """Video endpoints — upload, list, status, delete."""
 
+import logging
 import shutil
 import uuid
 from pathlib import Path
@@ -17,6 +18,8 @@ from backend.database.schemas import (
     VideoStatusResponse,
     TapEventResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -40,6 +43,7 @@ def upload_video(file: UploadFile = File(...), db: Session = Depends(get_db)):
     db.add(video)
     db.commit()
     db.refresh(video)
+    logger.info("Uploaded video: id=%d, name=%s", video.id, video.original_name)
     return video
 
 
@@ -99,6 +103,7 @@ def delete_video(video_id: int, db: Session = Depends(get_db)):
 
     db.delete(video)  # cascade deletes tap_events
     db.commit()
+    logger.info("Deleted video: id=%d, name=%s", video_id, video.original_name)
 
 
 def _run_processing(video_id: int, roi_config: str):
@@ -125,4 +130,5 @@ def start_processing(
         raise HTTPException(409, "Video is already being processed")
 
     background_tasks.add_task(_run_processing, video_id, roi_config)
+    logger.info("Processing queued: video_id=%d, roi_config=%s", video_id, roi_config)
     return {"message": "Processing started", "video_id": video_id}
