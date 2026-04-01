@@ -11,54 +11,60 @@ A self-contained application that counts beers served from a dual-tap beer dispe
 ## 1. Project Structure
 
 ```
-beer-tap-counter/
-├── docker-compose.yml
-├── .env
-├── README.md
+gambooza_case_study/
 ├── CLAUDE.md
-│
-├── frontend/
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   ├── app.py                  # Streamlit UI
-│   └── utils/
-│       └── api_client.py       # Helper to call FastAPI endpoints
+├── docker-compose.yml              # (TODO) Docker Compose for full stack
 │
 ├── backend/
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   ├── main.py                 # FastAPI app entry point
-│   ├── config.py               # Settings, paths, constants
-│   ├── database/
-│   │   ├── models.py           # SQLAlchemy ORM models
-│   │   ├── schemas.py          # Pydantic schemas
-│   │   ├── connection.py       # Engine + session factory
-│   │   └── migrations/         # Alembic or manual SQL scripts
-│   ├── routers/
-│   │   ├── videos.py           # Upload, list, delete endpoints
-│   │   └── counts.py           # Query counts by video/date/tap
-│   ├── services/
-│   │   ├── processor.py        # Orchestrates the ML pipeline
-│   │   └── background.py       # Background task runner
+│   ├── __init__.py
+│   ├── main.py                     # (TODO) FastAPI app entry point
+│   ├── config.py                   # (TODO) Settings, paths, constants
+│   ├── database/                   # (TODO) SQLAlchemy models, schemas
+│   ├── routers/                    # (TODO) API endpoints
+│   ├── services/                   # (TODO) Background processor
 │   └── ml/
 │       ├── __init__.py
+│       ├── common.py               # Shared utilities (ROI, cropping, interactive selectors)
 │       ├── approach_simple/
-│       │   ├── detector.py     # ROI + frame differencing logic
-│       │   └── config.py       # Thresholds, ROI coordinates
+│       │   ├── __init__.py
+│       │   └── detector.py         # SimpleDetector — CPU pixel differencing
 │       └── approach_yolo/
-│           ├── detector.py     # YOLO + tracking logic
-│           ├── config.py       # Model paths, confidence thresholds
-│           └── models/         # YOLO weights (.pt files)
+│           ├── __init__.py
+│           ├── detector.py         # YOLODetector — GPU wrapper
+│           ├── pipeline.py         # 4-stage orchestrator (ROI → YOLO → Relink → SAM3)
+│           ├── yolo_track.py       # YOLO-World + BoT-SORT tracking
+│           ├── relink.py           # Track relinking + pour classification
+│           └── sam3_tracking.py    # SAM3 tap handle segmentation
+│
+├── frontend/                       # (TODO) Streamlit UI
+│
+├── scripts/
+│   ├── run_simple.py               # CLI: run SimpleDetector on a video
+│   └── run_yolo_pipeline.py        # CLI: run YOLO+SAM3 pipeline on a video
+│
+├── config/
+│   ├── pipeline.yaml               # Default YOLO pipeline config
+│   ├── pipeline[1-7].yaml          # Per-video pipeline configs
+│   └── botsort.yaml                # BoT-SORT tracker config
 │
 ├── data/
-│   ├── videos/                 # Uploaded videos land here (Docker volume)
-│   └── db/
-│       └── app.db              # SQLite database file (Docker volume)
+│   ├── videos/                     # Source videos (cerveza1–7.mp4, etc.)
+│   ├── models/                     # ML weights (yolov8x-worldv2.pt, sam3.pt, etc.)
+│   └── db/                         # (TODO) SQLite database
 │
-└── notebooks/                  # Dev/exploration (not deployed)
-    ├── 01_explore_videos.ipynb
-    ├── 02_roi_calibration.ipynb
-    └── 03_yolo_experiments.ipynb
+├── results/                        # Pipeline outputs (per-video directories)
+│
+└── notebooks/                      # Exploration & development (not deployed)
+    ├── 01_explore.py               # Full-ROI pixel motion heatmap
+    ├── 01_exploreTABS.py           # Per-tap pixel activity signals
+    ├── 02_exploreYOLO.py           # YOLO detection experiments
+    ├── 03_YOLO_track.py            # (original) YOLO tracking
+    ├── 04_relink_tracks.py         # (original) track relinking v1
+    ├── 05_relink_coexistence.py    # (original) track relinking v2
+    ├── 06_YOLOE_seg_track.py       # YOLO-E segmentation experiments
+    ├── sam3_tracking.py            # (original) SAM3 tracking
+    ├── pipeline.py                 # (original) pipeline orchestrator
+    └── common.py                   # (original) shared utilities
 ```
 
 ---
@@ -316,7 +322,30 @@ When user clicks "Process":
 
 ## 6. ML Pipeline — Implemented Architecture
 
-The ML pipeline is a 4-stage system orchestrated by `notebooks/pipeline.py`, driven by a YAML config file (e.g. `config/pipeline.yaml`). Each stage produces output files that the next stage consumes. Stages are skippable and idempotent — existing outputs are reused unless `--force` is set.
+Two ML approaches share the same output interface (event list + counts). The backend selects which to run based on config (`ML_APPROACH=simple|yolo`).
+
+### Approach A: SimpleDetector (CPU, fast)
+
+`backend/ml/approach_simple/detector.py` — pixel differencing on two small tap-handle ROIs.
+
+- Two normalised ROIs per tap handle → frame differencing → activity signal per tap
+- ON/OFF thresholding → event detection (each OFF→ON→OFF cycle = 1 pour event)
+- Multiprocessing on chunks for long videos (> 3000 frames)
+- Runs in seconds on CPU, no GPU needed
+- Outputs: per-tap time series, tap heatmaps, event list
+
+```bash
+# Interactive ROI selection:
+python scripts/run_simple.py --video data/videos/cerveza2.mp4 --interactive
+
+# From saved ROIs:
+python scripts/run_simple.py --video data/videos/cerveza2.mp4 \
+    --roi-json results/simple_cerveza2/simple_roi.json
+```
+
+### Approach B: YOLO + SAM3 Pipeline (GPU, accurate)
+
+`backend/ml/approach_yolo/` — 4-stage system driven by a YAML config file. Each stage produces output files that the next stage consumes. Stages are skippable and idempotent — existing outputs are reused unless `--force` is set.
 
 ### Pipeline Stages
 
@@ -352,12 +381,17 @@ Output: `raw_detections.csv` with per-frame bounding boxes and track IDs.
 
 Post-processes YOLO tracks to fix fragmentation and classify pour events:
 1. **Merge fragmented tracks** — tracks with overlapping time/space are relinked into single continuous tracks
-2. **Classify pours** — a track is a "pour" if it has enough frames (`min_pour_frames: 30`) and enough spatial movement (`movement_threshold: 5.0 px`)
+2. **Classify pours** — a track is a "pour" if it meets all three criteria:
+   - Enough frames (`min_pour_frames: 30`)
+   - Enough spatial spread (`movement_threshold: 5.0 px`)
+   - **Not stationary** — cups that sit in one spot (within `stationary_px: 10` of their median position) for more than `stationary_ratio: 80%` of their lifespan are filtered out (e.g. cups left on the counter, waiting glasses)
 
 Key parameters:
 - `overlap_threshold: 15` frames of co-existence → incompatible tracks
 - `min_track_dets: 2` — ignore tiny tracks
 - `max_interp_gap: 10` — interpolate gaps up to this many frames
+- `stationary_ratio: 0.8` — fraction of frames near median position to be considered stationary
+- `stationary_px: 10.0` — pixel radius for "same spot" check
 
 Output: `relinked_detections.csv`, `pour_events.json`, `pour_frame_ranges.json`.
 
@@ -398,7 +432,7 @@ roi:
   tap_divider: null    # optional, not used by YOLO/relink
 
 yolo:
-  model: yolov8x-worldv2.pt
+  model: data/models/yolov8x-worldv2.pt
   classes: [cup, person]
   sample_every: 1
   conf_threshold: 0.25
@@ -408,41 +442,47 @@ relink:
   overlap_threshold: 15
   min_pour_frames: 30
   movement_threshold: 5.0
+  stationary_ratio: 0.8   # skip cups stationary for >80% of their lifespan
+  stationary_px: 10.0     # px radius for "same spot"
 
 sam3:
-  model: sam3.pt
+  model: data/models/sam3.pt
   object_labels: [TAP_A, TAP_B]
   tap_bboxes: null     # pixel-space on cropped frame, or null for interactive
   frame_skip: 5
   half: true
 ```
 
-### Running the Pipeline
+### Running the YOLO Pipeline
 
 ```bash
 # Full pipeline (interactive ROI + bbox selection on first run):
-python notebooks/pipeline.py --config config/pipeline.yaml --interactive
+python scripts/run_yolo_pipeline.py --config config/pipeline.yaml --interactive
 
 # Re-run with saved coordinates:
-python notebooks/pipeline.py --config config/pipeline.yaml
+python scripts/run_yolo_pipeline.py --config config/pipeline.yaml
 
 # Run a single stage:
-python notebooks/pipeline.py --config config/pipeline.yaml --stage relink
+python scripts/run_yolo_pipeline.py --config config/pipeline.yaml --stage relink
 
 # Force re-run even if outputs exist:
-python notebooks/pipeline.py --config config/pipeline.yaml --force
+python scripts/run_yolo_pipeline.py --config config/pipeline.yaml --force
 ```
 
 ### Key Implementation Files
 
 | File | Purpose |
 |------|---------|
-| `notebooks/pipeline.py` | Main orchestrator — loads config, runs stages, assigns taps |
-| `notebooks/common.py` | Shared utilities — ROI selection, cropping, matplotlib-based interactive selectors |
-| `notebooks/03_YOLO_track.py` | YOLO-World + BoT-SORT tracking logic |
-| `notebooks/05_relink_coexistence.py` | Track relinking + pour event classification |
-| `notebooks/sam3_tracking.py` | SAM3 video propagation for tap handle tracking |
-| `config/pipeline.yaml` | Default pipeline config |
+| `backend/ml/common.py` | Shared utilities — ROI selection, cropping, interactive selectors |
+| `backend/ml/approach_simple/detector.py` | SimpleDetector — CPU pixel differencing |
+| `backend/ml/approach_yolo/detector.py` | YOLODetector — GPU wrapper |
+| `backend/ml/approach_yolo/pipeline.py` | 4-stage orchestrator (ROI → YOLO → Relink → SAM3) |
+| `backend/ml/approach_yolo/yolo_track.py` | YOLO-World + BoT-SORT tracking |
+| `backend/ml/approach_yolo/relink.py` | Track relinking + pour classification |
+| `backend/ml/approach_yolo/sam3_tracking.py` | SAM3 tap handle segmentation |
+| `scripts/run_simple.py` | CLI entry for SimpleDetector |
+| `scripts/run_yolo_pipeline.py` | CLI entry for YOLO pipeline |
+| `config/pipeline.yaml` | Default YOLO pipeline config |
 | `config/botsort.yaml` | BoT-SORT tracker config |
 
 ---
@@ -451,23 +491,20 @@ python notebooks/pipeline.py --config config/pipeline.yaml --force
 
 ### Phase 1: ML Pipeline (DONE)
 
-Notebook-based exploration → unified 4-stage pipeline:
-1. Explored videos, calibrated ROIs interactively.
-2. Built YOLO-World + BoT-SORT tracking (`03_YOLO_track.py`).
-3. Built track relinking + pour classification (`05_relink_coexistence.py`).
-4. Built SAM3 tap handle tracking (`sam3_tracking.py`).
-5. Unified into `pipeline.py` with YAML config.
-6. Validated across multiple videos (pipeline1–7 configs).
-7. **Result:** Pipeline produces `summary.json` with TAP_A / TAP_B / UNKNOWN counts.
+Notebook-based exploration → two production detectors:
+1. Explored videos, calibrated ROIs interactively (`notebooks/01_explore*.py`).
+2. Built YOLO-World + BoT-SORT + Relink + SAM3 pipeline (now in `backend/ml/approach_yolo/`).
+3. Built SimpleDetector — CPU pixel differencing (now in `backend/ml/approach_simple/`).
+4. Validated YOLO pipeline across multiple videos (pipeline1–7 configs).
+5. Organized: production code in `backend/ml/`, exploration in `notebooks/`, CLIs in `scripts/`.
 
 ### Phase 2: Application Skeleton (NEXT)
 
-1. Set up the project structure as defined in Section 1.
-2. Create Dockerfiles and docker-compose.yml.
-3. Implement database models and connection.
-4. Build FastAPI endpoints — integrate the existing ML pipeline as the backend processor.
-5. Build Streamlit UI that talks to the backend.
-6. **Goal:** End-to-end flow works: upload → pipeline processing → display counts.
+1. Implement database models and connection (`backend/database/`).
+2. Build FastAPI endpoints — integrate both detectors as backend processor.
+3. Build Streamlit UI (`frontend/`).
+4. Create Dockerfiles and docker-compose.yml.
+5. **Goal:** End-to-end flow works: upload → processing → display counts.
 
 ### Phase 3: Polish
 

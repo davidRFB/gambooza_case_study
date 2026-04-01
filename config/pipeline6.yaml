@@ -29,7 +29,7 @@ roi:
 
 # ── YOLO Tracking (Stage 3a) ─────────────────────────────────────────────────
 yolo:
-  model: yolov8x-worldv2.pt
+  model: data/models/yolov8x-worldv2.pt
   classes: [cup, person]
   sample_every: 1          # process every Nth frame (1 = all)
   conf_threshold: 0.25
@@ -49,7 +49,7 @@ relink:
 
 # ── SAM3 Tap Handle Tracking (Stage 4) ───────────────────────────────────────
 sam3:
-  model: sam3.pt
+  model: data/models/sam3.pt
   object_labels: [TAP_A, TAP_B]
   colors: [[0, 255, 0], [0, 128, 255]]  # BGR per object
   tap_bboxes: [[115.59275980426388, 155.01650382179628, 294.96956260172215, 215.51637222093893], [442.5043293996316, 78.59561742287917, 481.7761737990751, 270.70923462015685]]

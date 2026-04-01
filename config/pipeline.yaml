@@ -29,7 +29,7 @@ roi:
 
 # ── YOLO Tracking (Stage 3a) ─────────────────────────────────────────────────
 yolo:
-  model: yolov8x-worldv2.pt
+  model: data/models/yolov8x-worldv2.pt
   classes: [cup, person]
   sample_every: 1          # process every Nth frame (1 = all)
   conf_threshold: 0.25
@@ -44,12 +44,14 @@ relink:
   max_interp_gap: 10       # interpolate gaps <= this many frames
   min_pour_frames: 30      # minimum frames after relinking to count as pour
   movement_threshold: 5.0  # min spatial spread (px) to count as pour
+  stationary_ratio: 0.8    # if cup stays near median pos for this fraction → skip
+  stationary_px: 10.0      # px radius to consider "same spot"
   video_padding: 2.0       # seconds of padding around pour events in auto-video
   record_range: null       # [start_s, stop_s] or null (manual override)
 
 # ── SAM3 Tap Handle Tracking (Stage 4) ───────────────────────────────────────
 sam3:
-  model: sam3.pt
+  model: data/models/sam3.pt
   object_labels: [TAP_A, TAP_B]
   colors: [[0, 255, 0], [0, 128, 255]]  # BGR per object
   tap_bboxes: null         # [[x1,y1,x2,y2], ...] in crop-space pixels, or null for interactive

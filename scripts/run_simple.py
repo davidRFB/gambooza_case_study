@@ -1,16 +1,16 @@
 """
-Test SimpleDetector on a video.
+Run SimpleDetector on a video.
 
 Usage:
   # Interactive — draw tap A and tap B handle ROIs on first frame:
-  python test_simple_detector.py --video data/videos/cerveza2.mp4 --interactive
+  python scripts/run_simple.py --video data/videos/cerveza2.mp4 --interactive
 
   # Load ROIs from a previous run:
-  python test_simple_detector.py --video data/videos/cerveza2.mp4 \
+  python scripts/run_simple.py --video data/videos/cerveza2.mp4 \
       --roi-json results/simple_test_cerveza2/simple_roi.json
 
   # Custom output dir:
-  python test_simple_detector.py --video data/videos/cerveza2.mp4 \
+  python scripts/run_simple.py --video data/videos/cerveza2.mp4 \
       --roi-json results/simple_test_cerveza2/simple_roi.json \
       --output results/simple_test_cerveza2_v2
 """
@@ -20,56 +20,19 @@ import json
 import sys
 from pathlib import Path
 
+# Ensure project root is on PYTHONPATH
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import cv2
 import numpy as np
 
-sys.path.insert(0, "backend/ml/approach_simple")
-
-from detector import SimpleDetector, plot_simple_results
+from backend.ml.approach_simple.detector import SimpleDetector, plot_simple_results
+from backend.ml.common import select_roi_interactive
 
 
 # ---------------------------------------------------------------------------
-# Interactive ROI selection
+# ROI resolution
 # ---------------------------------------------------------------------------
-
-def select_roi_interactive(frame_bgr: np.ndarray, title: str) -> tuple:
-    """Show frame, let user drag a rectangle, return normalised ROI."""
-    import matplotlib
-    matplotlib.use("TkAgg")
-    import matplotlib.pyplot as plt
-    from matplotlib.widgets import RectangleSelector
-
-    h, w = frame_bgr.shape[:2]
-    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-
-    fig, ax = plt.subplots(figsize=(14, 8))
-    ax.imshow(rgb)
-    ax.set_title(title)
-    ax.axis("off")
-    plt.tight_layout()
-
-    coords = {}
-
-    def on_select(eclick, erelease):
-        coords["x0"] = eclick.xdata
-        coords["y0"] = eclick.ydata
-        coords["x1"] = erelease.xdata
-        coords["y1"] = erelease.ydata
-
-    selector = RectangleSelector(
-        ax, on_select, useblit=True, button=[1], interactive=True,
-        props=dict(facecolor="cyan", edgecolor="red", alpha=0.3, linewidth=2),
-    )
-    plt.show()
-
-    if not coords:
-        print("No rectangle drawn. Exiting.")
-        sys.exit(1)
-
-    x0, y0, x1, y1 = coords["x0"], coords["y0"], coords["x1"], coords["y1"]
-    return (min(x0, x1) / w, min(y0, y1) / h,
-            max(x0, x1) / w, max(y0, y1) / h)
-
 
 def load_or_select_rois(video_path: Path, roi_json: Path | None,
                         interactive: bool) -> dict:
@@ -111,12 +74,12 @@ def load_or_select_rois(video_path: Path, roi_json: Path | None,
 # ---------------------------------------------------------------------------
 
 def main():
-    p = argparse.ArgumentParser(description="Test SimpleDetector")
+    p = argparse.ArgumentParser(description="Run SimpleDetector")
     p.add_argument("--video", required=True, type=Path)
     p.add_argument("--roi-json", type=Path, default=None,
                    help="Path to simple_roi.json from a previous run")
     p.add_argument("--output", type=Path, default=None,
-                   help="Output directory (default: results/simple_test_<video>)")
+                   help="Output directory (default: results/simple_<video>)")
     p.add_argument("--interactive", action="store_true",
                    help="Force interactive ROI selection")
     p.add_argument("--sample-every", type=int, default=3)
@@ -126,7 +89,7 @@ def main():
     p.add_argument("--progress-every", type=int, default=3000)
     args = p.parse_args()
 
-    out = args.output or Path(f"results/simple_test_{args.video.stem}")
+    out = args.output or Path(f"results/simple_{args.video.stem}")
     out.mkdir(parents=True, exist_ok=True)
 
     # Resolve ROIs
