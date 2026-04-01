@@ -7,7 +7,8 @@ __pycache__/
 data/explore_output/
 *.ts
 data/explore_tabs_output/
-
+*.jpg
+My-First-Project-1/
 # C extensions
 *.so
 *.pt
