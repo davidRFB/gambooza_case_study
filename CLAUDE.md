@@ -17,11 +17,20 @@ gambooza_case_study/
 │
 ├── backend/
 │   ├── __init__.py
-│   ├── main.py                     # (TODO) FastAPI app entry point
-│   ├── config.py                   # (TODO) Settings, paths, constants
-│   ├── database/                   # (TODO) SQLAlchemy models, schemas
-│   ├── routers/                    # (TODO) API endpoints
-│   ├── services/                   # (TODO) Background processor
+│   ├── main.py                     # FastAPI app entry point
+│   ├── config.py                   # Settings, paths, constants
+│   ├── database/
+│   │   ├── __init__.py
+│   │   ├── connection.py           # Engine, SessionLocal, init_db, get_db
+│   │   ├── models.py              # SQLAlchemy ORM: Video, TapEvent
+│   │   └── schemas.py             # Pydantic response models
+│   ├── routers/
+│   │   ├── __init__.py
+│   │   ├── videos.py              # Upload, list, status, delete, process
+│   │   └── counts.py              # Query counts, summary
+│   ├── services/
+│   │   ├── __init__.py
+│   │   └── processor.py           # Background processor (YOLO pipeline bridge)
 │   └── ml/
 │       ├── __init__.py
 │       ├── common.py               # Shared utilities (ROI, cropping, interactive selectors)
@@ -30,11 +39,20 @@ gambooza_case_study/
 │       │   └── detector.py         # SimpleDetector — CPU pixel differencing
 │       └── approach_yolo/
 │           ├── __init__.py
-│           ├── detector.py         # YOLODetector — GPU wrapper
+│           ├── detector.py         # YOLODetector — GPU wrapper + tap assignment
 │           ├── pipeline.py         # 4-stage orchestrator (ROI → YOLO → Relink → SAM3)
 │           ├── yolo_track.py       # YOLO-World + BoT-SORT tracking
 │           ├── relink.py           # Track relinking + pour classification
 │           └── sam3_tracking.py    # SAM3 tap handle segmentation
+│
+├── tests/
+│   ├── __init__.py
+│   ├── test_app.py                 # FastAPI app health check
+│   ├── test_database.py            # DB models, columns, cascade delete
+│   ├── test_schemas.py             # Pydantic schema validation
+│   ├── test_videos_router.py       # Upload, list, status, delete, process endpoints
+│   ├── test_counts_router.py       # Counts query and summary endpoints
+│   └── test_processor.py           # ROI config loader, YOLO config builder, event mapper
 │
 ├── frontend/                       # (TODO) Streamlit UI
 │
@@ -49,10 +67,17 @@ gambooza_case_study/
 │
 ├── data/
 │   ├── videos/                     # Source videos (cerveza1–7.mp4, etc.)
+│   ├── uploads/                    # User-uploaded videos (via API)
 │   ├── models/                     # ML weights (yolov8x-worldv2.pt, sam3.pt, etc.)
-│   └── db/                         # (TODO) SQLite database
+│   ├── db_files/                   # SQLite database (app.db)
+│   └── roi_configs/                # Named ROI configs (default.json, etc.)
 │
 ├── results/                        # Pipeline outputs (per-video directories)
+│   ├── web_{id}/                   # Web upload pipeline outputs
+│   ├── pipeline_cerveza*/          # CLI pipeline outputs
+│   └── simple_test_cerveza*/       # SimpleDetector outputs
+│
+├── notes.txt                       # Development notes, TODOs, known issues
 │
 └── notebooks/                      # Exploration & development (not deployed)
     ├── 01_explore.py               # Full-ROI pixel motion heatmap
@@ -83,11 +108,8 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - video_data:/app/data/videos
-      - db_data:/app/data/db
-    environment:
-      - ML_APPROACH=simple  # Toggle: "simple" | "yolo"
-      - DATABASE_URL=sqlite:///app/data/db/app.db
+      - upload_data:/app/data/uploads
+      - db_data:/app/data/db_files
     deploy:
       resources:
         reservations:
@@ -104,15 +126,15 @@ services:
       - BACKEND_URL=http://backend:8000
 
 volumes:
-  video_data:
+  upload_data:
   db_data:
 ```
 
 ### Key Docker Decisions
 
 - **GPU passthrough:** Use `nvidia-container-toolkit` so the backend container can access the host GPU. Required for both YOLO inference and faster OpenCV processing.
-- **Shared volumes:** Videos are saved by the backend; both services read the SQLite DB (though only the backend writes).
-- **Toggle ML approach:** The `ML_APPROACH` env var selects which detector class gets instantiated. Both share the same interface (see Section 6).
+- **Shared volumes:** Uploads saved by the backend; both services read the SQLite DB (though only the backend writes).
+- **Always YOLO:** Processing always runs the full YOLO+SAM3 pipeline. SimpleDetector is planned as a future pre-filter for long videos (see notes.txt).
 
 ### Backend Dockerfile Skeleton
 
@@ -124,7 +146,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
 ### Frontend Dockerfile Skeleton
@@ -146,44 +168,45 @@ CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0
 
 ```
 Table: videos
-├── id              INTEGER PK AUTOINCREMENT
-├── filename        TEXT NOT NULL
-├── original_name   TEXT NOT NULL
-├── upload_date     DATETIME DEFAULT now
-├── status          TEXT DEFAULT 'pending'   # pending | processing | completed | error
-├── duration_sec    FLOAT NULLABLE
-├── error_message   TEXT NULLABLE
-└── ml_approach     TEXT NULLABLE            # Which detector was used
+├── id                    INTEGER PK AUTOINCREMENT
+├── filename              TEXT NOT NULL          # UUID name on disk (in data/uploads/)
+├── original_name         TEXT NOT NULL          # user's original filename
+├── upload_date           DATETIME DEFAULT now
+├── status                TEXT DEFAULT 'pending' # pending | processing | completed | error
+├── duration_sec          FLOAT NULLABLE
+├── error_message         TEXT NULLABLE
+├── ml_approach           TEXT NULLABLE          # "yolo"
+├── processing_started_at DATETIME NULLABLE
+├── processing_finished_at DATETIME NULLABLE
+└── output_dir            TEXT NULLABLE          # path to pipeline intermediate files
 
 Table: tap_events
 ├── id              INTEGER PK AUTOINCREMENT
-├── video_id        INTEGER FK → videos.id
+├── video_id        INTEGER FK → videos.id (cascade delete)
 ├── tap             TEXT NOT NULL             # 'A' | 'B'
 ├── frame_start     INTEGER NOT NULL
 ├── frame_end       INTEGER NOT NULL
 ├── timestamp_start FLOAT NOT NULL           # Seconds into video
 ├── timestamp_end   FLOAT NOT NULL
-└── confidence      FLOAT NULLABLE           # Only for YOLO approach
+├── confidence      FLOAT NULLABLE
+└── count           INTEGER DEFAULT 1        # Beers served in this event
 
-View/Query: counts_summary (derived, not a physical table)
-├── video_id
-├── tap_a_count     COUNT WHERE tap = 'A'
-├── tap_b_count     COUNT WHERE tap = 'B'
-└── total           tap_a_count + tap_b_count
+Counts are computed as SUM(count) per tap, not COUNT(*).
 ```
 
 ### Pydantic Schemas (`backend/database/schemas.py`)
 
-Define request/response models:
-- `VideoUploadResponse(id, filename, status)`
-- `VideoStatus(id, status, tap_a_count, tap_b_count, total, error_message)`
-- `TapEvent(tap, frame_start, frame_end, timestamp_start, timestamp_end)`
-- `CountQuery(video_id?, date_from?, date_to?, tap?)`
-- `CountResult(video_id, filename, upload_date, tap_a, tap_b, total)`
+Response models (not DB tables — shapes for API JSON):
+- `VideoUploadResponse(id, filename, original_name, status)`
+- `VideoStatusResponse(id, filename, original_name, upload_date, status, duration_sec, error_message, ml_approach, processing_started_at, processing_finished_at, output_dir, tap_a_count, tap_b_count, total, events)`
+- `VideoListItem(id, original_name, upload_date, status, ml_approach)`
+- `TapEventResponse(id, tap, frame_start, frame_end, timestamp_start, timestamp_end, confidence, count)`
+- `CountResult(video_id, original_name, upload_date, tap_a, tap_b, total)`
+- `CountSummary(tap_a_total, tap_b_total, grand_total, video_count)`
 
 ### Migration Strategy
 
-Keep it simple: a single `init_db.py` script that calls `Base.metadata.create_all(engine)` on startup. No Alembic needed at intern level.
+`init_db()` in `connection.py` calls `Base.metadata.create_all(engine)` on startup. No Alembic. If schema changes, delete `data/db_files/app.db` and restart.
 
 ---
 
@@ -192,61 +215,95 @@ Keep it simple: a single `init_db.py` script that calls `Base.metadata.create_al
 ### Entry Point (`backend/main.py`)
 
 ```python
-# Pseudocode structure
-app = FastAPI(title="Beer Tap Counter API")
-
-@app.on_event("startup")
-def startup():
-    init_database()
-    load_ml_detector(approach=os.getenv("ML_APPROACH", "simple"))
-
+app = FastAPI(title="Beer Tap Counter API", lifespan=lifespan)
+# lifespan calls init_db() on startup
 app.include_router(videos_router, prefix="/api/videos")
 app.include_router(counts_router, prefix="/api/counts")
 ```
 
 ### Router: Videos (`backend/routers/videos.py`)
 
-| Method | Endpoint              | Purpose                        |
-|--------|-----------------------|--------------------------------|
-| POST   | `/api/videos/upload`  | Accept mp4/mov, save to disk, create DB row with status='pending' |
-| POST   | `/api/videos/{id}/process` | Launch background processing task |
-| GET    | `/api/videos/{id}/status`  | Return current status + counts if completed |
-| GET    | `/api/videos/`        | List all uploaded videos with their status |
-| DELETE | `/api/videos/{id}`    | Remove video file + DB records  |
+| Method | Endpoint                   | Purpose                                              |
+|--------|----------------------------|------------------------------------------------------|
+| POST   | `/api/videos/upload`       | Accept mp4/mov, save to `data/uploads/`, create DB row |
+| POST   | `/api/videos/{id}/process` | Launch background YOLO pipeline, returns 202         |
+| GET    | `/api/videos/{id}/status`  | Return status + counts + events if completed         |
+| GET    | `/api/videos/`             | List all uploaded videos                             |
+| DELETE | `/api/videos/{id}`         | Remove video file + DB records (cascade)             |
 
 #### Upload Flow
 
-1. Receive `UploadFile` from request.
-2. Generate unique filename: `{uuid}_{original_name}`.
-3. Save to `/app/data/videos/`.
+1. Validate file extension (.mp4, .mov only).
+2. Generate unique filename: `{uuid8}_{original_name}`.
+3. Save to `data/uploads/`.
 4. Insert row in `videos` table with `status='pending'`.
 5. Return `VideoUploadResponse`.
 
 #### Process Flow
 
-1. Set `status='processing'` in DB.
-2. Launch `BackgroundTasks.add_task(process_video, video_id)`.
+1. Validate video exists (404) and not already processing (409).
+2. Launch `BackgroundTasks.add_task(_run_processing, video_id, roi_config)`.
 3. Return `202 Accepted` immediately.
-4. Background task runs ML detector, writes `tap_events`, updates `status='completed'` or `status='error'`.
+4. Background task creates its own `SessionLocal()` (request session closes on response).
+5. Processor runs YOLO pipeline, writes `tap_events`, updates status.
+
+#### Process Endpoint Parameters
+
+- `roi_config` (query, default `"default"`) — name of ROI config in `data/roi_configs/`
 
 ### Router: Counts (`backend/routers/counts.py`)
 
-| Method | Endpoint              | Purpose                        |
-|--------|-----------------------|--------------------------------|
+| Method | Endpoint              | Purpose                                              |
+|--------|-----------------------|------------------------------------------------------|
 | GET    | `/api/counts/`        | Query counts with filters: video_id, date range, tap |
-| GET    | `/api/counts/summary` | Aggregate totals across all videos |
+| GET    | `/api/counts/summary` | Aggregate totals across all completed videos         |
 
 ### Background Processing (`backend/services/processor.py`)
 
 ```
-function process_video(video_id):
-    1. Load video path from DB
-    2. Instantiate detector (simple or yolo based on config)
-    3. Call detector.count(video_path) → List[TapEvent]
-    4. Bulk insert tap_events into DB
-    5. Update video status to 'completed'
-    6. On exception: update status to 'error', save error_message
+process_video(video_id, db, roi_config="default"):
+    1. Set status='processing', record processing_started_at
+    2. Load ROI config from data/roi_configs/{roi_config}.json
+    3. Create temp YAML config from config/pipeline.yaml:
+       - Override video_path → data/uploads/{filename}
+       - Override output_dir → results/web_{video_id}/
+       - Override roi.tap_roi + sam3.tap_bboxes from ROI config
+       - Resolve all relative paths to absolute (tracker, models)
+       - Pre-create tap_roi.json in output_dir (skip interactive mode)
+    4. Run YOLODetector(temp_config).run()
+    5. Map pour_events to DB TapEvent rows:
+       - "TAP_A" → "A", "TAP_B" → "B"
+       - "time_start"/"time_end" → timestamp_start/timestamp_end
+       - UNKNOWN or unassigned events are skipped
+    6. Set status='completed', record processing_finished_at, output_dir
+    7. On exception: status='error', save error_message
 ```
+
+### ROI Config System (`data/roi_configs/`)
+
+Named JSON files with ROI coordinates for different camera setups:
+
+```json
+{
+  "simple": {
+    "tap_roi": [0.4678, 0.3737, 0.6311, 0.5540],
+    "tap_a_roi": [0.4827, 0.4470, 0.5245, 0.4705],
+    "tap_b_roi": [0.5638, 0.4103, 0.5764, 0.5340]
+  },
+  "yolo": {
+    "tap_roi": [0.4483, 0.3702, 0.6655, 0.8278],
+    "sam3_tap_bboxes": [
+      [115.59, 155.02, 294.97, 215.52],
+      [442.50, 78.60, 481.78, 270.71]
+    ]
+  }
+}
+```
+
+- `simple` section: normalized ROIs for SimpleDetector (future use)
+- `yolo` section: crop region + pixel-space SAM3 bounding boxes
+- `default.json` ships with cerveza camera values
+- New cameras → new JSON file (via CLI interactive tools, frontend picker in Phase 3)
 
 ### Error Handling Patterns
 
@@ -322,9 +379,9 @@ When user clicks "Process":
 
 ## 6. ML Pipeline — Implemented Architecture
 
-Two ML approaches share the same output interface (event list + counts). The backend selects which to run based on config (`ML_APPROACH=simple|yolo`).
+Processing always runs the full YOLO+SAM3 pipeline. SimpleDetector is available as a CLI tool and planned as a future pre-filter for long videos (see Optimization section below).
 
-### Approach A: SimpleDetector (CPU, fast)
+### Approach A: SimpleDetector (CPU, fast) — CLI only
 
 `backend/ml/approach_simple/detector.py` — pixel differencing on two small tap-handle ROIs.
 
@@ -333,6 +390,7 @@ Two ML approaches share the same output interface (event list + counts). The bac
 - Multiprocessing on chunks for long videos (> 3000 frames)
 - Runs in seconds on CPU, no GPU needed
 - Outputs: per-tap time series, tap heatmaps, event list
+- **Not used by the web app** — planned as pre-filter for YOLO (see notes.txt)
 
 ```bash
 # Interactive ROI selection:
@@ -343,9 +401,9 @@ python scripts/run_simple.py --video data/videos/cerveza2.mp4 \
     --roi-json results/simple_cerveza2/simple_roi.json
 ```
 
-### Approach B: YOLO + SAM3 Pipeline (GPU, accurate)
+### Approach B: YOLO + SAM3 Pipeline (GPU, accurate) — Used by web app
 
-`backend/ml/approach_yolo/` — 4-stage system driven by a YAML config file. Each stage produces output files that the next stage consumes. Stages are skippable and idempotent — existing outputs are reused unless `--force` is set.
+`backend/ml/approach_yolo/` — 4-stage system + tap assignment, driven by a YAML config file. Each stage produces output files that the next stage consumes. Stages are skippable and idempotent — existing outputs are reused unless `--force` is set.
 
 ### Pipeline Stages
 
@@ -354,7 +412,7 @@ Stage 1: ROI Selection      → tap_roi.json (crop region + SAM3 tap bboxes)
 Stage 2: YOLO Tracking      → raw_detections.csv (per-frame cup/person tracks)
 Stage 3: Relink              → relinked_detections.csv + pour_events.json
 Stage 4: SAM3 Tap Tracking   → sam3_centroids.csv (tap handle centroid trajectories)
-Final:   Tap Assignment      → pour_events_assigned.json + summary.json
+Final:   Tap Assignment      → pour_events_assigned.json (done in detector.py)
 ```
 
 ### Stage 1: ROI Selection
@@ -365,6 +423,8 @@ Interactive or config-driven. User selects:
 
 No A|B divider line — tap side is determined later by SAM3 centroid Y movement.
 Saved to `tap_roi.json` in the output directory.
+
+For web uploads, `tap_roi.json` is pre-created from the named ROI config to skip interactive mode.
 
 ### Stage 2: YOLO Tracking
 
@@ -405,14 +465,16 @@ Uses **SAM3VideoPredictor** (Segment Anything Model 3) to track tap handles acro
 
 Output: `sam3_centroids.csv` with per-frame centroid coordinates for each tap label.
 
-### Tap Assignment (Final)
+### Tap Assignment (Final — in `detector.py`)
 
 Correlates pour events with SAM3 centroid data:
 - For each pour's frame range, compute **centroid-Y standard deviation** for each tap
 - The tap with **more Y movement** during the pour is the one that poured
 - If no meaningful movement difference → `UNKNOWN`
 
-Output: `pour_events_assigned.json` (enriched pour events with `tap` field) and `summary.json` with final counts.
+Output: `pour_events_assigned.json` (enriched pour events with `tap` field).
+
+**Note:** Tap assignment is called in `YOLODetector.run()` after all 4 stages complete. It was originally only in `pipeline.py:main()` (the CLI entry point) and was missing from the detector class.
 
 ### Pipeline Config (`config/pipeline.yaml`)
 
@@ -475,7 +537,7 @@ python scripts/run_yolo_pipeline.py --config config/pipeline.yaml --force
 |------|---------|
 | `backend/ml/common.py` | Shared utilities — ROI selection, cropping, interactive selectors |
 | `backend/ml/approach_simple/detector.py` | SimpleDetector — CPU pixel differencing |
-| `backend/ml/approach_yolo/detector.py` | YOLODetector — GPU wrapper |
+| `backend/ml/approach_yolo/detector.py` | YOLODetector — GPU wrapper + tap assignment |
 | `backend/ml/approach_yolo/pipeline.py` | 4-stage orchestrator (ROI → YOLO → Relink → SAM3) |
 | `backend/ml/approach_yolo/yolo_track.py` | YOLO-World + BoT-SORT tracking |
 | `backend/ml/approach_yolo/relink.py` | Track relinking + pour classification |
@@ -484,6 +546,40 @@ python scripts/run_yolo_pipeline.py --config config/pipeline.yaml --force
 | `scripts/run_yolo_pipeline.py` | CLI entry for YOLO pipeline |
 | `config/pipeline.yaml` | Default YOLO pipeline config |
 | `config/botsort.yaml` | BoT-SORT tracker config |
+
+---
+
+## 7. Testing
+
+### Test Suite (34 tests)
+
+Run with: `source .venv-gambooza/bin/activate && python -m pytest tests/ -v`
+
+| File | Tests | What it covers |
+|------|-------|----------------|
+| `test_app.py` | 2 | Health check, /docs available |
+| `test_database.py` | 6 | Table existence, column names, insert, cascade delete |
+| `test_schemas.py` | 5 | Pydantic model instantiation and serialization |
+| `test_videos_router.py` | 9 | Upload, reject bad extension, list, status, 404s, process 202, delete |
+| `test_counts_router.py` | 4 | Counts query, filter by tap, empty results, summary |
+| `test_processor.py` | 8 | ROI config loading/validation, YOLO config builder (mocked), event mapping |
+
+### Testing patterns
+
+- In-memory SQLite with `StaticPool` for router tests (avoids disk, fast, isolated per test)
+- `dependency_overrides` on `get_db` to inject test DB session
+- Mock `_import_yolo_detector` to test config building without GPU/ML deps
+- Each test fixture creates a fresh DB
+
+---
+
+## 8. Development Environment
+
+- **Python:** 3.11 via `.venv-gambooza` (managed with `uv`)
+- **Install deps:** `source .venv-gambooza/bin/activate && uv pip install -r requirements.txt`
+- **Run server:** `uvicorn backend.main:app --port 8000 --reload`
+- **Run tests:** `python -m pytest tests/ -v`
+- **DB location:** `data/db_files/app.db` (delete to reset schema)
 
 ---
 
@@ -498,13 +594,17 @@ Notebook-based exploration → two production detectors:
 4. Validated YOLO pipeline across multiple videos (pipeline1–7 configs).
 5. Organized: production code in `backend/ml/`, exploration in `notebooks/`, CLIs in `scripts/`.
 
-### Phase 2: Application Skeleton (NEXT)
+### Phase 2: Application Skeleton (DONE — backend, frontend TODO)
 
-1. Implement database models and connection (`backend/database/`).
-2. Build FastAPI endpoints — integrate both detectors as backend processor.
-3. Build Streamlit UI (`frontend/`).
-4. Create Dockerfiles and docker-compose.yml.
-5. **Goal:** End-to-end flow works: upload → processing → display counts.
+1. ✅ Database models, connection, schemas (`backend/database/`).
+2. ✅ FastAPI endpoints — videos router (upload, list, status, delete, process).
+3. ✅ Counts router (query with filters, summary).
+4. ✅ Background processor service — bridges YOLO pipeline to DB.
+5. ✅ ROI config system — named JSON configs for different camera setups.
+6. ✅ 34 tests covering all layers.
+7. ✅ End-to-end tested: upload → process → completed with tap events.
+8. 🔲 Build Streamlit UI (`frontend/`).
+9. 🔲 Create Dockerfiles and docker-compose.yml.
 
 ### Phase 3: Polish
 
@@ -521,7 +621,7 @@ Notebook-based exploration → two production detectors:
 
 These should go in the README or be prepared as talking points:
 
-1. **Simple vs YOLO:** Simple is faster and requires no GPU but is fragile to environmental changes. YOLO is robust but heavier. The hybrid is best but most complex.
+1. **Simple vs YOLO:** Simple is faster and requires no GPU but is fragile to environmental changes. YOLO is robust but heavier. The planned hybrid (Simple as pre-filter → YOLO on active windows only) is the best of both worlds but requires solving tracker continuity across time gaps.
 
 2. **Frame sampling rate:** Processing every frame is accurate but slow (a 2h video at 30fps = 216,000 frames). Sampling every 3rd frame (10 effective fps) cuts processing by 3x with negligible accuracy loss for events lasting several seconds.
 
@@ -531,7 +631,9 @@ These should go in the README or be prepared as talking points:
 
 5. **Background processing:** FastAPI BackgroundTasks is simple but limited (no retry, no queue). For production, you'd use Celery + Redis. For this demo, BackgroundTasks is sufficient.
 
-6. **ROI hardcoding:** The ROIs are manually defined per camera setup. A production system would need a calibration UI or auto-detection. For the demo, hardcoded values from the provided videos are acceptable.
+6. **ROI configs:** ROIs are stored as named JSON configs per camera setup. A production system would need a calibration UI or auto-detection. For the demo, `default.json` with cerveza camera values works for all provided videos.
+
+7. **Tap assignment in detector vs pipeline:** The tap assignment logic (`_assign_pours_to_taps`) was originally only in `pipeline.py:main()` (CLI path). It's now also called in `YOLODetector.run()` so the web flow gets tap-assigned results.
 
 ---
 
@@ -539,17 +641,20 @@ These should go in the README or be prepared as talking points:
 
 Before the presentation, verify:
 
-- [ ] `docker-compose up` builds and starts both services without errors.
-- [ ] Frontend is accessible at `localhost:8501`.
-- [ ] Upload a new video (not used during development if possible).
-- [ ] Processing starts, status updates to 'processing', spinner shows.
-- [ ] Processing completes, status updates to 'completed'.
-- [ ] Tap A count, Tap B count, and Total are displayed correctly.
-- [ ] Counts match manual count from watching the video.
-- [ ] Uploading a second video works and shows separate results.
-- [ ] Query by date/tap works.
-- [ ] Error case: upload a non-video file → proper error message.
-- [ ] Processing a 2h video completes in reasonable time (< 5 min with GPU).
+- [x] Backend starts without errors: `uvicorn backend.main:app --port 8000`
+- [x] All 34 tests pass: `python -m pytest tests/ -v`
+- [x] Upload a video: `POST /api/videos/upload`
+- [x] Processing starts: `POST /api/videos/{id}/process` returns 202
+- [x] Processing completes: status updates to 'completed'
+- [x] Pipeline outputs saved to `results/web_{id}/`
+- [ ] Tap A count, Tap B count, and Total are displayed correctly
+- [ ] Counts match manual count from watching the video
+- [ ] Uploading a second video works and shows separate results
+- [ ] Query by date/tap works via `/api/counts/`
+- [x] Error case: upload a non-video file → 422 error
+- [ ] `docker-compose up` builds and starts both services
+- [ ] Frontend is accessible at `localhost:8501`
+- [ ] Processing a 2h video completes in reasonable time (< 5 min with GPU)
 
 ---
 
@@ -557,3 +662,32 @@ Before the presentation, verify:
 
 ### Backend (`requirements.txt`)
 
+```
+opencv-python
+numpy
+matplotlib
+ipython
+ipykernel
+pandas
+ultralytics
+fastapi
+uvicorn[standard]
+sqlalchemy
+aiofiles
+python-multipart
+pyyaml
+```
+
+### Test dependencies
+
+```
+pytest
+```
+
+### Environment
+
+Managed with `uv` in `.venv-gambooza`:
+```bash
+source .venv-gambooza/bin/activate
+uv pip install -r requirements.txt
+```

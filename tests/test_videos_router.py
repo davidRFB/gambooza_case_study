@@ -91,6 +91,23 @@ def test_get_status_not_found(client):
     assert resp.status_code == 404
 
 
+def test_process_returns_202(client):
+    name, file, ct = _make_fake_mp4()
+    upload = client.post(
+        "/api/videos/upload", files={"file": (name, file, ct)},
+    ).json()
+
+    resp = client.post(f"/api/videos/{upload['id']}/process")
+    assert resp.status_code == 202
+    data = resp.json()
+    assert data["video_id"] == upload["id"]
+
+
+def test_process_not_found(client):
+    resp = client.post("/api/videos/9999/process")
+    assert resp.status_code == 404
+
+
 def test_delete_video(client):
     name, file, ct = _make_fake_mp4()
     upload = client.post(

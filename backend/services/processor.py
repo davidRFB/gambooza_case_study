@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 from sqlalchemy.orm import Session
 
-from backend.config import UPLOADS_DIR, ROI_CONFIGS_DIR, YOLO_BASE_CONFIG
+from backend.config import UPLOADS_DIR, ROI_CONFIGS_DIR, YOLO_BASE_CONFIG, RESULTS_DIR, PROJECT_ROOT
 from backend.database.models import Video, TapEvent as TapEventModel
 
 
@@ -46,7 +46,7 @@ def process_video(video_id: int, db: Session, roi_config: str = "default"):
 
         video.status = "completed"
         video.ml_approach = "yolo"
-        video.output_dir = str(Path("results") / f"web_{video_id}")
+        video.output_dir = str(RESULTS_DIR / f"web_{video_id}")
         video.processing_finished_at = datetime.utcnow()
         db.commit()
 
@@ -68,13 +68,36 @@ def _run_yolo_pipeline(video_path: Path, video_id: int, roi: dict) -> list[dict]
 
     # Override video path and output dir
     cfg["video_path"] = str(video_path)
-    output_dir = str(Path("results") / f"web_{video_id}")
+    output_dir = str(RESULTS_DIR / f"web_{video_id}")
     cfg["output_dir"] = output_dir
 
     # Override ROI and SAM3 bboxes from roi config
     yolo_roi = roi["yolo"]
     cfg.setdefault("roi", {})["tap_roi"] = yolo_roi["tap_roi"]
     cfg.setdefault("sam3", {})["tap_bboxes"] = yolo_roi["sam3_tap_bboxes"]
+
+    # Set preview_second to 0 to avoid seeking past end of short videos
+    cfg.setdefault("yolo", {})["preview_second"] = 0
+
+    # Resolve all relative paths to absolute (load_config resolves relative
+    # to config file's grandparent, which breaks for temp files in /tmp/)
+    yolo_cfg = cfg.get("yolo", {})
+    if "tracker" in yolo_cfg and not Path(yolo_cfg["tracker"]).is_absolute():
+        yolo_cfg["tracker"] = str(PROJECT_ROOT / yolo_cfg["tracker"])
+    if "model" in yolo_cfg and not Path(yolo_cfg["model"]).is_absolute():
+        yolo_cfg["model"] = str(PROJECT_ROOT / yolo_cfg["model"])
+    sam3_cfg = cfg.get("sam3", {})
+    if "model" in sam3_cfg and not Path(sam3_cfg["model"]).is_absolute():
+        sam3_cfg["model"] = str(PROJECT_ROOT / sam3_cfg["model"])
+
+    # Pre-create tap_roi.json in output dir so ROI stage skips interactive mode
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    tap_roi_json = output_path / "tap_roi.json"
+    tap_roi_json.write_text(json.dumps({
+        "tap_roi": yolo_roi["tap_roi"],
+        "sam3_tap_bboxes": yolo_roi["sam3_tap_bboxes"],
+    }, indent=2))
 
     # Write temp config
     tmp = tempfile.NamedTemporaryFile(

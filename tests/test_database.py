@@ -31,7 +31,7 @@ def test_videos_columns(db):
     expected = {
         "id", "filename", "original_name", "upload_date", "status",
         "duration_sec", "error_message", "ml_approach",
-        "processing_started_at", "processing_finished_at",
+        "processing_started_at", "processing_finished_at", "output_dir",
     }
     assert expected == cols
 

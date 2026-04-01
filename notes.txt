@@ -11,6 +11,52 @@ BACKEND TODOs
 - [ ] test_schemas.py: edge cases — nullable fields, missing values, validation rejects bad input
 - [ ] test_schemas.py: from_attributes — create schema from ORM model object
 
+## Optimization: Hybrid SimpleDetector + YOLO (deferred)
+- [ ] Use SimpleDetector as pre-filter for long videos (≥ 4k frames)
+      - Run SimpleDetector first → get active frame ranges
+      - Merge nearby events (10s gap) + pad (3s before/after)
+      - Feed only those windows to YOLO
+- [ ] Problem: BoT-SORT tracker needs continuous frames for reliable tracking.
+      Skipping frames mid-loop breaks track continuity → double counting risk.
+      Multiple separate YOLO passes need careful track merging across windows.
+- [ ] Needs research: can BoT-SORT handle frame gaps? Or do we need to
+      process full frames but only *record detections* in active windows?
+- [ ] For now: always run YOLO on full video. Revisit after core app works.
+
+## Bugs found & fixed during integration
+- [x] Relative paths break when temp YAML config is in /tmp/ — load_config
+      resolves paths relative to config file's grandparent. Fix: make all paths
+      absolute in the temp config (video_path, output_dir, tracker, models).
+- [x] preview_second=60 crashes on short videos — yolo_track.py seeks past EOF,
+      gets None frame. Fix: clamp to total_frames-1 + fallback to frame_0.
+- [x] YOLODetector.run() never ran tap assignment — _assign_pours_to_taps lived
+      only in pipeline.py main(), not called by the detector. Fix: added call
+      in detector.py after stages complete.
+
+## Known issues & risks to watch
+- [ ] Re-processing a video: if output files already exist and force=False, all
+      stages are skipped. But DB tap_events from the first run remain — could
+      lead to duplicate events. Need to delete old tap_events before reprocessing.
+- [ ] output_dir collision: if video id=1 is deleted and a new video gets id=1,
+      it reuses results/web_1/ from the old run. Consider using uuid instead of
+      DB id for output_dir, or cleaning up output_dir on video delete.
+- [ ] duration_sec is never set — processor doesn't extract video duration.
+      Could read it from OpenCV (cap.get(CAP_PROP_FRAME_COUNT) / FPS) or from
+      the YOLO pipeline summary.json after processing.
+- [ ] SQLite concurrent writes — if two videos process simultaneously, one will
+      hit "database is locked". Single-user demo is fine, production needs
+      Postgres or a queue.
+- [ ] No retry mechanism — if processing fails, status stays "error" forever.
+      Need a way to reset status to "pending" and retry (or an endpoint for it).
+- [ ] Large video uploads — no file size limit. A 2h video at 1080p could be
+      several GB. Should add a max size check or chunked upload.
+- [ ] YOLO model loading — the model is loaded fresh for every process_video()
+      call. For multiple videos, keeping the model in memory would be faster.
+      But BackgroundTasks runs in a thread, not a persistent worker.
+
 ## Phase 3 (Polish)
 - [ ] Frontend ROI picker — draw boxes on video frame in Streamlit
 - [ ] Handle multiple camera setups with different ROIs
+- [ ] Add a /api/videos/{id}/reprocess endpoint that clears old events + reruns
+- [ ] Clean up results/web_{id}/ on video delete
+- [ ] Set duration_sec from pipeline output after processing

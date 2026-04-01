@@ -32,6 +32,7 @@ def test_video_status_response():
         duration_sec=90.0, error_message=None, ml_approach="simple",
         processing_started_at=datetime(2025, 1, 1, 12, 0, 0),
         processing_finished_at=datetime(2025, 1, 1, 12, 0, 30),
+        output_dir="results/web_1",
         tap_a_count=3, tap_b_count=2, total=5, events=[],
     )
     d = v.model_dump()

@@ -132,9 +132,11 @@ def run_yolo_tracking(
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     ret, frame_0 = cap.read()
 
-    preview_frame_idx = int(preview_second * fps)
+    preview_frame_idx = min(int(preview_second * fps), total_frames - 1)
     cap.set(cv2.CAP_PROP_POS_FRAMES, preview_frame_idx)
     ret, frame_preview = cap.read()
+    if not ret:
+        frame_preview = frame_0  # fallback to first frame
     cap.release()
 
     print(f"Frame 0: {frame_0.shape}  "

@@ -11,7 +11,9 @@ import json
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-from backend.ml.approach_yolo.pipeline import load_config, STAGE_FUNCS, STAGES
+from backend.ml.approach_yolo.pipeline import (
+    load_config, STAGE_FUNCS, STAGES, _assign_pours_to_taps,
+)
 
 
 @dataclass
@@ -82,14 +84,18 @@ class YOLODetector:
 
         total_elapsed = round(time.time() - t_pipeline, 3)
 
-        # Read results from summary
+        # Run tap assignment (correlate pour events with SAM3 centroids)
         output_dir = Path(cfg["output_dir"])
-        assigned_path = output_dir / "pour_events_assigned.json"
-        if assigned_path.exists():
-            pours = json.loads(assigned_path.read_text())
+        pour_json = output_dir / "pour_events.json"
+        centroids_csv = output_dir / "sam3_centroids.csv"
+        assigned_pours = _assign_pours_to_taps(pour_json, centroids_csv)
+
+        if assigned_pours is not None:
+            assigned_path = output_dir / "pour_events_assigned.json"
+            assigned_path.write_text(json.dumps(assigned_pours, indent=2))
+            pours = assigned_pours
         else:
-            pour_path = output_dir / "pour_events.json"
-            pours = json.loads(pour_path.read_text()) if pour_path.exists() else []
+            pours = json.loads(pour_json.read_text()) if pour_json.exists() else []
 
         tap_a = sum(1 for p in pours if p.get("tap") == "TAP_A")
         tap_b = sum(1 for p in pours if p.get("tap") == "TAP_B")

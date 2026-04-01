@@ -11,6 +11,7 @@ UPLOADS_DIR = DATA_DIR / "uploads"   # user-uploaded videos
 DB_DIR = DATA_DIR / "db_files"
 MODELS_DIR = DATA_DIR / "models"
 ROI_CONFIGS_DIR = DATA_DIR / "roi_configs"
+RESULTS_DIR = PROJECT_ROOT / "results"
 
 # ── Database ───────────────────────────────────────────────────────
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DB_DIR / 'app.db'}")
