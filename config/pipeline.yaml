@@ -1,0 +1,57 @@
+# ── Beer Tap Counting Pipeline Configuration ─────────────────────────────────
+#
+# Usage:
+#   python notebooks/pipeline.py --config config/pipeline.yaml
+#   python notebooks/pipeline.py --config config/pipeline.yaml --interactive
+#   python notebooks/pipeline.py --config config/pipeline.yaml --stage yolo_tracking
+#
+
+# ── Video & Output ────────────────────────────────────────────────────────────
+video_path: data/videos/cerveza2.mp4
+output_dir: results/pipeline_run
+
+# ── Stage Control ─────────────────────────────────────────────────────────────
+# Set false to skip a stage. Existing outputs are reused unless --force is set.
+stages:
+  roi_selection: true
+  yolo_tracking: true
+  relink: true
+  sam3_tap_tracking: true
+
+# ── ROI & Divider (Stage 1+2) ────────────────────────────────────────────────
+# Normalised 0-1 coordinates. Set to null to trigger interactive selection.
+# Set roi_json to reuse a tap_roi.json from another run (skips interactive).
+roi:
+  roi_json: null           # e.g. results/other_run/tap_roi.json
+  tap_roi: null            # [x1, y1, x2, y2] or null
+  tap_divider: null        # [x1, y1, x2, y2] or null
+
+# ── YOLO Tracking (Stage 3a) ─────────────────────────────────────────────────
+yolo:
+  model: yolov8x-worldv2.pt
+  classes: [cup, person]
+  sample_every: 1          # process every Nth frame (1 = all)
+  conf_threshold: 0.25
+  tracker: config/botsort.yaml
+  movement_threshold: 5.0  # min px spread to count as pour
+  merge_gap: 5.0           # merge pour events within this many seconds
+  preview_second: 60.0
+  record_range: null       # [start_s, stop_s] or null
+
+# ── Relink (Stage 3b) ────────────────────────────────────────────────────────
+relink:
+  overlap_threshold: 15    # frames of co-existence -> incompatible
+  min_track_dets: 2        # ignore tracks with fewer detections
+  max_interp_gap: 10       # interpolate gaps <= this many frames
+  record_range: null       # [start_s, stop_s] or null
+
+# ── SAM3 Tap Handle Tracking (Stage 4) ───────────────────────────────────────
+sam3:
+  model: sam3.pt
+  object_labels: [TAP_A, TAP_B]
+  colors: [[0, 255, 0], [0, 128, 255]]  # BGR per object
+  tap_bboxes: null         # [[x1,y1,x2,y2], ...] in crop-space pixels, or null for interactive
+  max_frames: null         # null = all frames
+  frame_skip: 5            # process every Nth frame
+  save_snapshot_every: 50  # save PNG snapshots
+  half: true               # half precision for speed

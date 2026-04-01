@@ -38,6 +38,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 from ultralytics import YOLO, YOLOWorld
 
+from common import (
+    select_roi_interactive, select_divider_interactive,
+    point_side_of_line, crop_normalized, savefig,
+)
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -102,211 +107,56 @@ def parse_args():
 
 
 # ---------------------------------------------------------------------------
-# ROI selector
+# Helpers (select_roi_interactive, select_divider_interactive,
+#          point_side_of_line, crop_normalized, savefig imported from common)
 # ---------------------------------------------------------------------------
-
-def select_roi_interactive(frame: np.ndarray) -> tuple:
-    """Open a half-scale window, let the user click two corners, return normalised ROI."""
-    scale = 0.5
-    roi_frame = cv2.resize(frame.copy(), None, fx=scale, fy=scale)
-    clone = roi_frame.copy()
-    clicks = []
-
-    def on_click(event, x, y, flags, param):
-        if event != cv2.EVENT_LBUTTONDOWN:
-            return
-        clicks.append((x, y))
-        cv2.circle(roi_frame, (x, y), 5, (0, 255, 0), -1)
-        if len(clicks) == 2:
-            cv2.rectangle(roi_frame, clicks[0], clicks[1], (0, 255, 0), 2)
-            cv2.putText(roi_frame, "TAP AREA", (clicks[0][0], clicks[0][1] - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.imshow("Select TAP area  [click x2, r=reset, q=done]", roi_frame)
-
-    cv2.imshow("Select TAP area  [click x2, r=reset, q=done]", roi_frame)
-    cv2.setMouseCallback("Select TAP area  [click x2, r=reset, q=done]", on_click)
-
-    while True:
-        key = cv2.waitKey(0) & 0xFF
-        if key == ord('r'):
-            clicks.clear()
-            roi_frame[:] = clone
-            cv2.imshow("Select TAP area  [click x2, r=reset, q=done]", roi_frame)
-        elif key == ord('q'):
-            break
-
-    cv2.destroyAllWindows()
-
-    h_s, w_s = clone.shape[:2]
-    if len(clicks) < 2:
-        print(f"Only {len(clicks)}/2 clicks recorded. Run again with --crop-area.")
-        sys.exit(1)
-
-    roi = (clicks[0][0] / w_s, clicks[0][1] / h_s,
-           clicks[1][0] / w_s, clicks[1][1] / h_s)
-    roi = (min(roi[0], roi[2]), min(roi[1], roi[3]),
-           max(roi[0], roi[2]), max(roi[1], roi[3]))
-    return roi
-
-
-def select_divider_interactive(crop: np.ndarray) -> tuple:
-    """Open a window on the cropped frame, let the user click two points (top/bottom)
-    to define the A|B divider line. Returns normalised coordinates within the crop."""
-    scale = max(1.0, 600 / crop.shape[1])
-    disp = cv2.resize(crop.copy(), None, fx=scale, fy=scale)
-    clone = disp.copy()
-    clicks = []
-
-    def on_click(event, x, y, flags, param):
-        if event != cv2.EVENT_LBUTTONDOWN:
-            return
-        clicks.append((x, y))
-        cv2.circle(disp, (x, y), 5, (0, 0, 255), -1)
-        if len(clicks) == 2:
-            cv2.line(disp, clicks[0], clicks[1], (0, 0, 255), 2)
-            cv2.putText(disp, "A", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 2)
-            mid_x = (clicks[0][0] + clicks[1][0]) // 2
-            cv2.putText(disp, "B", (mid_x + 30, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
-        cv2.imshow("Select A|B divider  [click x2, r=reset, q=done]", disp)
-
-    cv2.imshow("Select A|B divider  [click x2, r=reset, q=done]", disp)
-    cv2.setMouseCallback("Select A|B divider  [click x2, r=reset, q=done]", on_click)
-
-    while True:
-        key = cv2.waitKey(0) & 0xFF
-        if key == ord('r'):
-            clicks.clear()
-            disp[:] = clone
-            cv2.imshow("Select A|B divider  [click x2, r=reset, q=done]", disp)
-        elif key == ord('q'):
-            break
-
-    cv2.destroyAllWindows()
-
-    h_s, w_s = clone.shape[:2]
-    if len(clicks) < 2:
-        print(f"Only {len(clicks)}/2 clicks recorded for divider. Run again with --crop-area.")
-        sys.exit(1)
-
-    divider = (clicks[0][0] / w_s, clicks[0][1] / h_s,
-               clicks[1][0] / w_s, clicks[1][1] / h_s)
-    return divider
-
-
-def point_side_of_line(px, py, x1, y1, x2, y2) -> str:
-    """Return 'A' if point is left of the line, 'B' if right.
-    The line is always oriented top-to-bottom (smallest y first)."""
-    if y1 > y2:
-        x1, y1, x2, y2 = x2, y2, x1, y1
-    cross = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1)
-    return "A" if cross <= 0 else "B"
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Core tracking function (importable by pipeline.py)
 # ---------------------------------------------------------------------------
 
-def crop_normalized(frame: np.ndarray, roi: tuple) -> np.ndarray:
-    h, w = frame.shape[:2]
-    x1, y1, x2, y2 = int(roi[0]*w), int(roi[1]*h), int(roi[2]*w), int(roi[3]*h)
-    return frame[y1:y2, x1:x2]
+def run_yolo_tracking(
+    video_path: Path,
+    output_dir: Path,
+    tap_roi: tuple,
+    tap_divider: tuple | None,
+    model_name: str = "yolov8x-worldv2.pt",
+    classes: list[str] | None = None,
+    sample_every: int = 1,
+    conf_threshold: float = 0.25,
+    tracker: str = "../config/botsort.yaml",
+    movement_threshold: float = 5.0,
+    merge_gap: float = 5.0,
+    preview_second: float = 60.0,
+    record_range: tuple | None = None,
+) -> Path:
+    """Run YOLO tracking on a cropped video region and return path to raw_detections.csv.
 
+    This function contains the full tracking + pour classification + CSV output logic.
+    """
+    if classes is None:
+        classes = ["cup", "person"]
 
-def savefig(fig, out_dir: Path, name: str):
-    path = out_dir / name
-    fig.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved {path}")
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-def main():
-    args = parse_args()
-
-    # -- Output directory ---------------------------------------------------
-    args.output.mkdir(parents=True, exist_ok=True)
-    roi_json = args.output / "tap_roi.json"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # -- Video metadata -----------------------------------------------------
-    if not args.video.exists():
-        print(f"Video not found: {args.video}")
-        sys.exit(1)
-
-    cap = cv2.VideoCapture(str(args.video))
+    cap = cv2.VideoCapture(str(video_path))
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = total_frames / fps
-    print(f"{args.video.name}: {fps:.0f} fps  {total_frames} frames  {duration:.1f}s")
+    print(f"{video_path.name}: {fps:.0f} fps  {total_frames} frames  {duration:.1f}s")
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     ret, frame_0 = cap.read()
 
-    preview_frame_idx = int(args.preview_second * fps)
+    preview_frame_idx = int(preview_second * fps)
     cap.set(cv2.CAP_PROP_POS_FRAMES, preview_frame_idx)
     ret, frame_preview = cap.read()
     cap.release()
 
     print(f"Frame 0: {frame_0.shape}  "
-          f"Preview frame ({args.preview_second:.0f}s): {frame_preview.shape}")
-
-    # -- Resolve TAP ROI ----------------------------------------------------
-    tap_roi = None
-
-    if args.tap_roi:
-        tap_roi = tuple(args.tap_roi)
-        print(f"TAP_ROI from CLI: {tuple(round(v, 4) for v in tap_roi)}")
-
-    elif args.crop_area:
-        print("Opening ROI selector on frame 0 ...")
-        tap_roi = select_roi_interactive(frame_0)
-        print(f"TAP_ROI = {tuple(round(v, 4) for v in tap_roi)}")
-
-    elif roi_json.exists():
-        data = json.loads(roi_json.read_text())
-        tap_roi = tuple(data["tap_roi"])
-        print(f"TAP_ROI loaded from {roi_json}: {tuple(round(v, 4) for v in tap_roi)}")
-
-    else:
-        print("No TAP_ROI defined. Re-run with --crop-area to select one interactively,\n"
-              "or pass --tap-roi X1 Y1 X2 Y2.")
-        sys.exit(1)
-
-    # -- Resolve TAP divider (A|B line) -------------------------------------
-    tap_divider = None
-
-    if args.tap_divider:
-        tap_divider = tuple(args.tap_divider)
-        print(f"TAP_DIVIDER from CLI: {tuple(round(v, 4) for v in tap_divider)}")
-
-    elif args.crop_area:
-        print("Opening divider selector on cropped frame ...")
-        crop_for_divider = crop_normalized(frame_0, tap_roi)
-        tap_divider = select_divider_interactive(crop_for_divider)
-        print(f"TAP_DIVIDER = {tuple(round(v, 4) for v in tap_divider)}")
-
-    elif roi_json.exists():
-        data = json.loads(roi_json.read_text())
-        if "tap_divider" in data:
-            tap_divider = tuple(data["tap_divider"])
-            print(f"TAP_DIVIDER loaded from {roi_json}: "
-                  f"{tuple(round(v, 4) for v in tap_divider)}")
-
-    # Save both ROI and divider together
-    if args.crop_area:
-        save_data = {"tap_roi": list(tap_roi)}
-        if tap_divider:
-            save_data["tap_divider"] = list(tap_divider)
-        roi_json.write_text(json.dumps(save_data, indent=2))
-        print(f"ROI config saved to {roi_json}")
-
-    if tap_divider is None:
-        print("WARNING: No tap divider defined. All pours will be unclassified.\n"
-              "  Re-run with --crop-area or pass --tap-divider X1 Y1 X2 Y2.")
+          f"Preview frame ({preview_second:.0f}s): {frame_preview.shape}")
 
     # -- Crop preview frames ------------------------------------------------
     crop_0 = crop_normalized(frame_0, tap_roi)
@@ -317,10 +167,10 @@ def main():
     ax1.set_title("Cropped — 0s")
     ax1.axis("off")
     ax2.imshow(cv2.cvtColor(crop_preview, cv2.COLOR_BGR2RGB))
-    ax2.set_title(f"Cropped — {args.preview_second:.0f}s")
+    ax2.set_title(f"Cropped — {preview_second:.0f}s")
     ax2.axis("off")
     plt.tight_layout()
-    savefig(fig, args.output, "01_crop_preview.png")
+    savefig(fig, output_dir, "01_crop_preview.png")
 
     # -- Tap A|B division preview -------------------------------------------
     if tap_divider:
@@ -345,23 +195,23 @@ def main():
         ax.legend(loc="upper right")
         ax.axis("off")
         plt.tight_layout()
-        savefig(fig, args.output, "01b_tap_division.png")
+        savefig(fig, output_dir, "01b_tap_division.png")
 
     # -- Load YOLO ----------------------------------------------------------
-    is_world = "world" in str(args.model).lower()
+    is_world = "world" in str(model_name).lower()
     if is_world:
-        print(f"\nLoading YOLO-World model: {args.model}")
-        model = YOLOWorld(args.model)
-        model.set_classes(args.classes)
-        print(f"  Detecting classes: {args.classes}")
+        print(f"\nLoading YOLO-World model: {model_name}")
+        model = YOLOWorld(model_name)
+        model.set_classes(classes)
+        print(f"  Detecting classes: {classes}")
     else:
-        print(f"\nLoading YOLO model: {args.model}")
-        model = YOLO(args.model)
+        print(f"\nLoading YOLO model: {model_name}")
+        model = YOLO(model_name)
 
     # -- Full-video tracking ------------------------------------------------
-    print(f"\nTracking video every {args.sample_every} frame(s) "
-          f"with {args.tracker} ...")
-    cap = cv2.VideoCapture(str(args.video))
+    print(f"\nTracking video every {sample_every} frame(s) "
+          f"with {tracker} ...")
+    cap = cv2.VideoCapture(str(video_path))
     frame_idx = 0
     all_detections = []          # (frame, time, class, conf, track_id, x1, y1, x2, y2)
     track_data = defaultdict(lambda: {"frames": [], "times": [], "bboxes": [],
@@ -370,11 +220,11 @@ def main():
     # -- Optional annotated video recording ---------------------------------
     rec_start_frame = rec_stop_frame = None
     video_writer = None
-    if args.record_range:
-        rec_start_frame = int(args.record_range[0] * fps)
-        rec_stop_frame = int(args.record_range[1] * fps)
-        print(f"Recording annotated video: {args.record_range[0]:.1f}s -> "
-              f"{args.record_range[1]:.1f}s  "
+    if record_range:
+        rec_start_frame = int(record_range[0] * fps)
+        rec_stop_frame = int(record_range[1] * fps)
+        print(f"Recording annotated video: {record_range[0]:.1f}s -> "
+              f"{record_range[1]:.1f}s  "
               f"(frames {rec_start_frame}-{rec_stop_frame})")
 
     # Pre-compute divider pixel coords for annotation
@@ -390,10 +240,10 @@ def main():
         if not ret:
             break
 
-        if frame_idx % args.sample_every == 0:
+        if frame_idx % sample_every == 0:
             crop = crop_normalized(frame, tap_roi)
-            results = model.track(crop, persist=True, tracker=args.tracker,
-                                  conf=args.conf_threshold, verbose=False)[0]
+            results = model.track(crop, persist=True, tracker=tracker,
+                                  conf=conf_threshold, verbose=False)[0]
 
             if results.boxes is not None and results.boxes.id is not None:
                 for box in results.boxes:
@@ -435,15 +285,15 @@ def main():
 
                 if video_writer is None:
                     h_out, w_out = annotated.shape[:2]
-                    rec_path = args.output / "annotated_clip.mp4"
+                    rec_path = output_dir / "annotated_clip.mp4"
                     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
                     video_writer = cv2.VideoWriter(str(rec_path), fourcc,
-                                                   fps / args.sample_every,
+                                                   fps / sample_every,
                                                    (w_out, h_out))
                     print(f"  Video writer opened: {rec_path} ({w_out}x{h_out})")
                 video_writer.write(annotated)
 
-            if frame_idx % (args.sample_every * 100) == 0:
+            if frame_idx % (sample_every * 100) == 0:
                 print(f"  Frame {frame_idx}/{total_frames}  "
                       f"tracks so far: {len(track_data)}", end="\r")
 
@@ -452,12 +302,12 @@ def main():
     cap.release()
     if video_writer is not None:
         video_writer.release()
-        print(f"  Annotated video saved to {args.output / 'annotated_clip.mp4'}")
+        print(f"  Annotated video saved to {output_dir / 'annotated_clip.mp4'}")
     print(f"\nTotal detections: {len(all_detections)}  "
           f"Unique track IDs: {len(track_data)}")
 
     # -- Save raw detections to CSV -----------------------------------------
-    raw_csv = args.output / "raw_detections.csv"
+    raw_csv = output_dir / "raw_detections.csv"
     with open(raw_csv, "w") as f:
         f.write("frame,time_s,class,confidence,track_id,x1,y1,x2,y2\n")
         for det in all_detections:
@@ -480,7 +330,7 @@ def main():
     ax.set_title("Detection timeline — all classes")
     ax.legend(loc="upper right")
     plt.tight_layout()
-    savefig(fig, args.output, "03_detection_timeline.png")
+    savefig(fig, output_dir, "03_detection_timeline.png")
 
     # -- Filter cup tracks --------------------------------------------------
     cup_tracks = {tid: td for tid, td in track_data.items() if td["class"] == "cup"}
@@ -527,7 +377,7 @@ def main():
     ax.set_title("Cup tracks (YOLO tracker IDs)")
     ax.legend(loc="upper right", fontsize=7)
     plt.tight_layout()
-    savefig(fig, args.output, "04_cup_tracks.png")
+    savefig(fig, output_dir, "04_cup_tracks.png")
 
     # -- Cup centers on crop with A|B divider (moving tracks only) ----------
     if tap_divider:
@@ -545,7 +395,7 @@ def main():
         plot_idx = 0
         for tid in sorted_tids:
             td = cup_tracks[tid]
-            if td["movement"] <= args.movement_threshold:
+            if td["movement"] <= movement_threshold:
                 continue
             bboxes = np.array(td["bboxes"])
             cx = (bboxes[:, 0] + bboxes[:, 2]) / 2
@@ -566,7 +416,7 @@ def main():
         ax.legend(loc="upper right", fontsize=7)
         ax.axis("off")
         plt.tight_layout()
-        savefig(fig, args.output, "04b_cup_centers_by_tap.png")
+        savefig(fig, output_dir, "04b_cup_centers_by_tap.png")
 
     # -- Person + cup co-occurrence -----------------------------------------
     frames_with_person: set = set()
@@ -588,7 +438,7 @@ def main():
 
     segments = []
     if cooccurrence_times:
-        gap_threshold = args.sample_every / fps * 3
+        gap_threshold = sample_every / fps * 3
         seg_start = cooccurrence_times[0]
         prev_t = cooccurrence_times[0]
         for t_s in cooccurrence_times[1:]:
@@ -619,7 +469,7 @@ def main():
     ax.set_title("Person + Cup co-occurrence = pour events")
     ax.legend(loc="upper right")
     plt.tight_layout()
-    savefig(fig, args.output, "05_cooccurrence.png")
+    savefig(fig, output_dir, "05_cooccurrence.png")
 
     # -- Classify tracks & merge pour events --------------------------------
     if cooccurrence_times:
@@ -629,7 +479,7 @@ def main():
             dur = td["times"][-1] - td["times"][0]
             overlaps = any(td["times"][-1] >= s and td["times"][0] <= e
                            for s, e in segments)
-            status = ("POUR" if overlaps and td["movement"] > args.movement_threshold
+            status = ("POUR" if overlaps and td["movement"] > movement_threshold
                       else "background")
             print(f"  ID {tid:3d} [Tap {td['tap']}]: "
                   f"move={td['movement']:.1f}px  dur={dur:.1f}s  "
@@ -641,7 +491,7 @@ def main():
         overlaps = (cooccurrence_times and
                     any(td["times"][-1] >= s and td["times"][0] <= e
                         for s, e in segments))
-        if overlaps and td["movement"] > args.movement_threshold:
+        if overlaps and td["movement"] > movement_threshold:
             pour_tracks.append({"track_ids": [tid], "start": td["times"][0],
                                  "end": td["times"][-1],
                                  "movement": td["movement"], "tap": td["tap"]})
@@ -650,7 +500,7 @@ def main():
     merged_pours = []
     for pt in pour_tracks:
         if (merged_pours
-                and pt["start"] - merged_pours[-1]["end"] < args.merge_gap
+                and pt["start"] - merged_pours[-1]["end"] < merge_gap
                 and pt["tap"] == merged_pours[-1]["tap"]):
             merged_pours[-1]["end"] = max(merged_pours[-1]["end"], pt["end"])
             merged_pours[-1]["track_ids"].extend(pt["track_ids"])
@@ -684,18 +534,18 @@ def main():
     ax.set_title(f"Final result: {len(merged_pours)} pour event(s) detected")
     ax.legend(loc="upper right")
     plt.tight_layout()
-    savefig(fig, args.output, "06_final_pours.png")
+    savefig(fig, output_dir, "06_final_pours.png")
 
     # -- Save summary JSON --------------------------------------------------
     summary = {
-        "video": str(args.video),
+        "video": str(video_path),
         "tap_roi": list(tap_roi),
         "tap_divider": list(tap_divider) if tap_divider else None,
-        "tracker": args.tracker,
+        "tracker": tracker,
         "fps": fps,
         "total_frames": total_frames,
         "duration_s": duration,
-        "sample_every": args.sample_every,
+        "sample_every": sample_every,
         "total_detections": len(all_detections),
         "unique_track_ids": len(track_data),
         "cup_tracks": len(cup_tracks),
@@ -705,10 +555,95 @@ def main():
             for j, mp in enumerate(merged_pours)
         ],
     }
-    summary_path = args.output / "summary.json"
+    summary_path = output_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2))
     print(f"\nSummary saved to {summary_path}")
-    print(f"All outputs written to: {args.output}/")
+    print(f"All outputs written to: {output_dir}/")
+
+    return raw_csv
+
+
+# ---------------------------------------------------------------------------
+# Main (standalone CLI)
+# ---------------------------------------------------------------------------
+
+def main():
+    args = parse_args()
+    args.output.mkdir(parents=True, exist_ok=True)
+    roi_json = args.output / "tap_roi.json"
+
+    # -- Video metadata for ROI resolution ----------------------------------
+    if not args.video.exists():
+        print(f"Video not found: {args.video}")
+        sys.exit(1)
+
+    cap = cv2.VideoCapture(str(args.video))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    ret, frame_0 = cap.read()
+    cap.release()
+
+    # -- Resolve TAP ROI ----------------------------------------------------
+    tap_roi = None
+    if args.tap_roi:
+        tap_roi = tuple(args.tap_roi)
+        print(f"TAP_ROI from CLI: {tuple(round(v, 4) for v in tap_roi)}")
+    elif args.crop_area:
+        print("Opening ROI selector on frame 0 ...")
+        tap_roi = select_roi_interactive(frame_0)
+        print(f"TAP_ROI = {tuple(round(v, 4) for v in tap_roi)}")
+    elif roi_json.exists():
+        data = json.loads(roi_json.read_text())
+        tap_roi = tuple(data["tap_roi"])
+        print(f"TAP_ROI loaded from {roi_json}: {tuple(round(v, 4) for v in tap_roi)}")
+    else:
+        print("No TAP_ROI defined. Re-run with --crop-area to select one interactively,\n"
+              "or pass --tap-roi X1 Y1 X2 Y2.")
+        sys.exit(1)
+
+    # -- Resolve TAP divider (A|B line) -------------------------------------
+    tap_divider = None
+    if args.tap_divider:
+        tap_divider = tuple(args.tap_divider)
+        print(f"TAP_DIVIDER from CLI: {tuple(round(v, 4) for v in tap_divider)}")
+    elif args.crop_area:
+        print("Opening divider selector on cropped frame ...")
+        crop_for_divider = crop_normalized(frame_0, tap_roi)
+        tap_divider = select_divider_interactive(crop_for_divider)
+        print(f"TAP_DIVIDER = {tuple(round(v, 4) for v in tap_divider)}")
+    elif roi_json.exists():
+        data = json.loads(roi_json.read_text())
+        if "tap_divider" in data:
+            tap_divider = tuple(data["tap_divider"])
+            print(f"TAP_DIVIDER loaded from {roi_json}: "
+                  f"{tuple(round(v, 4) for v in tap_divider)}")
+
+    if args.crop_area:
+        save_data = {"tap_roi": list(tap_roi)}
+        if tap_divider:
+            save_data["tap_divider"] = list(tap_divider)
+        roi_json.write_text(json.dumps(save_data, indent=2))
+        print(f"ROI config saved to {roi_json}")
+
+    if tap_divider is None:
+        print("WARNING: No tap divider defined. All pours will be unclassified.\n"
+              "  Re-run with --crop-area or pass --tap-divider X1 Y1 X2 Y2.")
+
+    # -- Run tracking -------------------------------------------------------
+    run_yolo_tracking(
+        video_path=args.video,
+        output_dir=args.output,
+        tap_roi=tap_roi,
+        tap_divider=tap_divider,
+        model_name=args.model,
+        classes=args.classes,
+        sample_every=args.sample_every,
+        conf_threshold=args.conf_threshold,
+        tracker=args.tracker,
+        movement_threshold=args.movement_threshold,
+        merge_gap=args.merge_gap,
+        preview_second=args.preview_second,
+        record_range=tuple(args.record_range) if args.record_range else None,
+    )
 
 
 if __name__ == "__main__":

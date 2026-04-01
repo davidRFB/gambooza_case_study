@@ -50,6 +50,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from common import crop_normalized, savefig
+
 # ── Defaults ────────────────────────────────────────────────────────────────
 
 OVERLAP_THRESHOLD = 15  # frames of co-existence → incompatible
@@ -160,19 +162,6 @@ def greedy_coexistence_groups(
     return groups
 
 
-def savefig(fig, out_dir: Path, name: str):
-    path = out_dir / name
-    fig.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved {path}")
-
-
-def crop_normalized(frame: np.ndarray, roi: tuple) -> np.ndarray:
-    h, w = frame.shape[:2]
-    x1, y1, x2, y2 = int(roi[0]*w), int(roi[1]*h), int(roi[2]*w), int(roi[3]*h)
-    return frame[y1:y2, x1:x2]
-
-
 _TRACK_COLORS = [
     (230, 159,  23),  # blue
     ( 34, 200,  78),  # green
@@ -209,9 +198,10 @@ def draw_detections(frame: np.ndarray, dets: pd.DataFrame,
     return out
 
 
-def render_annotated_video(args, df: pd.DataFrame):
+def render_annotated_video(video_path: Path, output_dir: Path,
+                           record_range: tuple, df: pd.DataFrame):
     """Read the original video frame-by-frame and render relinked detections."""
-    roi_json = args.output / "tap_roi.json"
+    roi_json = output_dir / "tap_roi.json"
     if not roi_json.exists():
         print(f"  WARNING: {roi_json} not found — cannot crop. Skipping video.")
         return
@@ -219,14 +209,14 @@ def render_annotated_video(args, df: pd.DataFrame):
     tap_roi = tuple(roi_cfg["tap_roi"])
     tap_divider = tuple(roi_cfg["tap_divider"]) if "tap_divider" in roi_cfg else None
 
-    cap = cv2.VideoCapture(str(args.video))
+    cap = cv2.VideoCapture(str(video_path))
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    rec_start = int(args.record_range[0] * fps)
-    rec_stop = int(args.record_range[1] * fps)
-    print(f"\nRendering annotated video: {args.record_range[0]:.1f}s → "
-          f"{args.record_range[1]:.1f}s  (frames {rec_start}–{rec_stop})")
+    rec_start = int(record_range[0] * fps)
+    rec_stop = int(record_range[1] * fps)
+    print(f"\nRendering annotated video: {record_range[0]:.1f}s → "
+          f"{record_range[1]:.1f}s  (frames {rec_start}–{rec_stop})")
 
     frame_dets: dict[int, pd.DataFrame] = {}
     for f, grp in df.groupby("frame"):
@@ -251,7 +241,7 @@ def render_annotated_video(args, df: pd.DataFrame):
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, rec_start)
     video_writer = None
-    rec_path = args.output / "relinked_clip.mp4"
+    rec_path = output_dir / "relinked_clip.mp4"
 
     for fidx in range(rec_start, min(rec_stop + 1, total_frames)):
         ret, frame = cap.read()
@@ -292,15 +282,23 @@ def render_annotated_video(args, df: pd.DataFrame):
         print(f"  Annotated video saved to {rec_path}                ")
 
 
-# ── Main ────────────────────────────────────────────────────────────────────
+# ── Core relink function (importable by pipeline.py) ───────────────────────
 
 
-def main():
-    args = parse_args()
-    args.output.mkdir(parents=True, exist_ok=True)
+def run_relink(
+    input_csv: Path,
+    output_dir: Path,
+    overlap_threshold: int = OVERLAP_THRESHOLD,
+    min_track_dets: int = MIN_TRACK_DETS,
+    max_interp_gap: int = MAX_INTERP_GAP,
+    video_path: Path | None = None,
+    record_range: tuple | None = None,
+) -> Path:
+    """Run track relinking and return path to relinked_detections.csv."""
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── 1. Load raw detections ──────────────────────────────────────────
-    df = pd.read_csv(args.input)
+    df = pd.read_csv(input_csv)
     df["cx"] = (df["x1"] + df["x2"]) / 2
     df["cy"] = (df["y1"] + df["y2"]) / 2
 
@@ -308,9 +306,9 @@ def main():
     print(f"Loaded {len(df)} detections  |  {len(cups)} cup rows")
 
     # ── 2. Per-track summaries ──────────────────────────────────────────
-    info = build_track_info(cups, args.min_track_dets)
+    info = build_track_info(cups, min_track_dets)
     tids = sorted(info.keys())
-    print(f"\n{len(tids)} cup tracks (≥ {args.min_track_dets} detections):")
+    print(f"\n{len(tids)} cup tracks (≥ {min_track_dets} detections):")
     for tid in tids:
         t = info[tid]
         print(f"  Track {tid:3d}: frames {t['first_frame']:4d}–{t['last_frame']:4d}  "
@@ -318,8 +316,8 @@ def main():
               f"median=({t['median_cx']:.0f}, {t['median_cy']:.0f})")
 
     # ── 3. Temporal incompatibility graph ───────────────────────────────
-    incompat = build_incompatibility(tids, info, args.overlap_threshold)
-    print(f"\nIncompatible pairs (overlap > {args.overlap_threshold} frames):")
+    incompat = build_incompatibility(tids, info, overlap_threshold)
+    print(f"\nIncompatible pairs (overlap > {overlap_threshold} frames):")
     for a, b in sorted(incompat):
         overlap = len(info[a]["frames"] & info[b]["frames"])
         print(f"  {a:3d} ↔ {b:3d}  ({overlap} frames overlap)")
@@ -361,7 +359,7 @@ def main():
         frames = track["frame"].values.astype(int)
         for idx in range(len(frames) - 1):
             gap = frames[idx + 1] - frames[idx]
-            if gap <= 1 or gap > args.max_interp_gap:
+            if gap <= 1 or gap > max_interp_gap:
                 continue
             ra, rb = track.iloc[idx], track.iloc[idx + 1]
             for f in range(frames[idx] + 1, frames[idx + 1]):
@@ -392,7 +390,7 @@ def main():
     # ── 7. Save relinked CSV ────────────────────────────────────────────
     out_cols = ["frame", "time_s", "class", "confidence", "track_id",
                 "x1", "y1", "x2", "y2", "original_track_id", "interpolated"]
-    out_csv = args.output / "relinked_detections.csv"
+    out_csv = output_dir / "relinked_detections.csv"
     df[out_cols].to_csv(out_csv, index=False)
 
     relinked_cups = df[df["class"] == "cup"]
@@ -403,7 +401,7 @@ def main():
     print(f"  Unique cup IDs:   {sorted(relinked_cups['track_id'].unique())}")
 
     # ── 8. Before / after timeline ──────────────────────────────────────
-    cups_before = pd.read_csv(args.input)
+    cups_before = pd.read_csv(input_csv)
     cups_before = cups_before[cups_before["class"] == "cup"]
     tids_before = sorted(cups_before["track_id"].unique())
 
@@ -450,7 +448,7 @@ def main():
     ax2.set_xlabel("Time (s)")
 
     plt.tight_layout()
-    savefig(fig, args.output, "07_relink_before_after.png")
+    savefig(fig, output_dir, "07_relink_before_after.png")
 
     # ── 9. x / y vs frame (after re-linking) ────────────────────────────
     fig, (ax_x, ax_y) = plt.subplots(2, 1, figsize=(12, 8))
@@ -473,21 +471,39 @@ def main():
     ax_y.grid(True)
 
     plt.tight_layout()
-    savefig(fig, args.output, "08_relinked_xy_vs_frame.png")
+    savefig(fig, output_dir, "08_relinked_xy_vs_frame.png")
 
     # ── 10. Annotated video export ──────────────────────────────────────
-    if args.record_range:
-        if not args.video:
-            print("\nERROR: --record-range requires --video <path>")
-        elif not args.video.exists():
-            print(f"\nERROR: video not found: {args.video}")
+    if record_range:
+        if not video_path:
+            print("\nERROR: record_range requires video_path")
+        elif not video_path.exists():
+            print(f"\nERROR: video not found: {video_path}")
         else:
-            render_annotated_video(args, df)
+            render_annotated_video(video_path, output_dir, record_range, df)
 
     print(f"\n{'=' * 60}")
     print(f"  BEFORE: {n_before} cup track IDs")
     print(f"  AFTER:  {n_after} physical cups")
     print(f"{'=' * 60}")
+
+    return out_csv
+
+
+# ── Main (standalone CLI) ──────────────────────────────────────────────────
+
+
+def main():
+    args = parse_args()
+    run_relink(
+        input_csv=args.input,
+        output_dir=args.output,
+        overlap_threshold=args.overlap_threshold,
+        min_track_dets=args.min_track_dets,
+        max_interp_gap=args.max_interp_gap,
+        video_path=args.video if hasattr(args, "video") and args.video else None,
+        record_range=tuple(args.record_range) if args.record_range else None,
+    )
 
 
 if __name__ == "__main__":

@@ -29,6 +29,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 from ultralytics import YOLO
 
+from common import (
+    select_roi_interactive, select_divider_interactive,
+    point_side_of_line, crop_normalized, savefig,
+)
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -82,118 +87,8 @@ def parse_args():
 
 
 # ---------------------------------------------------------------------------
-# ROI selector
-# ---------------------------------------------------------------------------
-
-def select_roi_interactive(frame: np.ndarray) -> tuple:
-    """Open a half-scale window, let the user click two corners, return normalised ROI."""
-    scale = 0.5
-    roi_frame = cv2.resize(frame.copy(), None, fx=scale, fy=scale)
-    clone = roi_frame.copy()
-    clicks = []
-
-    def on_click(event, x, y, flags, param):
-        if event != cv2.EVENT_LBUTTONDOWN:
-            return
-        clicks.append((x, y))
-        cv2.circle(roi_frame, (x, y), 5, (0, 255, 0), -1)
-        if len(clicks) == 2:
-            cv2.rectangle(roi_frame, clicks[0], clicks[1], (0, 255, 0), 2)
-            cv2.putText(roi_frame, "TAP AREA", (clicks[0][0], clicks[0][1] - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.imshow("Select TAP area  [click x2, r=reset, q=done]", roi_frame)
-
-    cv2.imshow("Select TAP area  [click x2, r=reset, q=done]", roi_frame)
-    cv2.setMouseCallback("Select TAP area  [click x2, r=reset, q=done]", on_click)
-
-    while True:
-        key = cv2.waitKey(0) & 0xFF
-        if key == ord('r'):
-            clicks.clear()
-            roi_frame[:] = clone
-            cv2.imshow("Select TAP area  [click x2, r=reset, q=done]", roi_frame)
-        elif key == ord('q'):
-            break
-
-    cv2.destroyAllWindows()
-
-    h_s, w_s = clone.shape[:2]
-    if len(clicks) < 2:
-        print(f"Only {len(clicks)}/2 clicks recorded. Run again with --crop-area.")
-        sys.exit(1)
-
-    roi = (clicks[0][0] / w_s, clicks[0][1] / h_s,
-           clicks[1][0] / w_s, clicks[1][1] / h_s)
-    # Normalise so x1<x2, y1<y2
-    roi = (min(roi[0], roi[2]), min(roi[1], roi[3]),
-           max(roi[0], roi[2]), max(roi[1], roi[3]))
-    return roi
-
-
-def select_divider_interactive(crop: np.ndarray) -> tuple:
-    """Open a window on the cropped frame, let the user click two points (top/bottom)
-    to define the A|B divider line. Returns normalised coordinates within the crop."""
-    scale = max(1.0, 600 / crop.shape[1])  # scale up small crops for easier clicking
-    disp = cv2.resize(crop.copy(), None, fx=scale, fy=scale)
-    clone = disp.copy()
-    clicks = []
-
-    def on_click(event, x, y, flags, param):
-        if event != cv2.EVENT_LBUTTONDOWN:
-            return
-        clicks.append((x, y))
-        cv2.circle(disp, (x, y), 5, (0, 0, 255), -1)
-        if len(clicks) == 2:
-            cv2.line(disp, clicks[0], clicks[1], (0, 0, 255), 2)
-            cv2.putText(disp, "A", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 2)
-            mid_x = (clicks[0][0] + clicks[1][0]) // 2
-            cv2.putText(disp, "B", (mid_x + 30, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
-        cv2.imshow("Select A|B divider  [click x2, r=reset, q=done]", disp)
-
-    cv2.imshow("Select A|B divider  [click x2, r=reset, q=done]", disp)
-    cv2.setMouseCallback("Select A|B divider  [click x2, r=reset, q=done]", on_click)
-
-    while True:
-        key = cv2.waitKey(0) & 0xFF
-        if key == ord('r'):
-            clicks.clear()
-            disp[:] = clone
-            cv2.imshow("Select A|B divider  [click x2, r=reset, q=done]", disp)
-        elif key == ord('q'):
-            break
-
-    cv2.destroyAllWindows()
-
-    h_s, w_s = clone.shape[:2]
-    if len(clicks) < 2:
-        print(f"Only {len(clicks)}/2 clicks recorded for divider. Run again with --crop-area.")
-        sys.exit(1)
-
-    divider = (clicks[0][0] / w_s, clicks[0][1] / h_s,
-               clicks[1][0] / w_s, clicks[1][1] / h_s)
-    return divider
-
-
-def point_side_of_line(px, py, x1, y1, x2, y2) -> str:
-    """Return 'A' if point is left of the line, 'B' if right.
-    The line is always oriented top-to-bottom (smallest y first)."""
-    if y1 > y2:
-        x1, y1, x2, y2 = x2, y2, x1, y1
-    cross = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1)
-    return "A" if cross <= 0 else "B"
-
-
-# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def crop_normalized(frame: np.ndarray, roi: tuple) -> np.ndarray:
-    h, w = frame.shape[:2]
-    x1, y1, x2, y2 = int(roi[0]*w), int(roi[1]*h), int(roi[2]*w), int(roi[3]*h)
-    return frame[y1:y2, x1:x2]
-
 
 def iou(box_a, box_b) -> float:
     x1 = max(box_a[0], box_b[0]);  y1 = max(box_a[1], box_b[1])
@@ -203,13 +98,6 @@ def iou(box_a, box_b) -> float:
     area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
     union = area_a + area_b - inter
     return inter / union if union > 0 else 0
-
-
-def savefig(fig, out_dir: Path, name: str):
-    path = out_dir / name
-    fig.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved {path}")
 
 
 # ---------------------------------------------------------------------------
