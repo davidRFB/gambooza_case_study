@@ -39,8 +39,7 @@ import numpy as np
 from ultralytics import YOLO, YOLOWorld
 
 from common import (
-    select_roi_interactive, select_divider_interactive,
-    point_side_of_line, crop_normalized, savefig,
+    select_roi_interactive, crop_normalized, savefig,
 )
 
 # ---------------------------------------------------------------------------
@@ -65,13 +64,6 @@ def parse_args():
                        metavar=("X1", "Y1", "X2", "Y2"),
                        help="Normalised tap-area ROI (0-1). Overrides any saved tap_roi.json.")
 
-    # Tap A/B divider
-    p.add_argument("--tap-divider", nargs=4, type=float,
-                   metavar=("X1", "Y1", "X2", "Y2"),
-                   help="Normalised divider line within the crop (0-1). "
-                        "Two points (top, bottom) defining the A|B boundary. "
-                        "Left of line = Tap A, right = Tap B. Overrides saved value.")
-
     # Model / detection
     p.add_argument("--model", default="yolov8x-worldv2.pt",
                    help="YOLO weights file or Ultralytics model name. "
@@ -88,14 +80,6 @@ def parse_args():
                         "Default points to the project's tuned config.")
     p.add_argument("--conf-threshold", type=float, default=0.25,
                    help="Minimum detection confidence.")
-
-    # Pour classification
-    p.add_argument("--movement-threshold", type=float, default=5.0,
-                   help="Minimum position spread (px) to count a track as a pour.")
-
-    # Merge
-    p.add_argument("--merge-gap", type=float, default=5.0,
-                   help="Pour tracks within this many seconds are merged into one event.")
 
     # Annotated video output
     p.add_argument("--record-range", nargs=2, type=float, metavar=("START", "STOP"),
@@ -120,20 +104,18 @@ def run_yolo_tracking(
     video_path: Path,
     output_dir: Path,
     tap_roi: tuple,
-    tap_divider: tuple | None,
     model_name: str = "yolov8x-worldv2.pt",
     classes: list[str] | None = None,
     sample_every: int = 1,
     conf_threshold: float = 0.25,
     tracker: str = "../config/botsort.yaml",
-    movement_threshold: float = 5.0,
-    merge_gap: float = 5.0,
     preview_second: float = 60.0,
     record_range: tuple | None = None,
 ) -> Path:
     """Run YOLO tracking on a cropped video region and return path to raw_detections.csv.
 
-    This function contains the full tracking + pour classification + CSV output logic.
+    Detects and tracks objects (cups, persons) across frames. Pour classification
+    and tap assignment happen downstream (relink + SAM stages).
     """
     if classes is None:
         classes = ["cup", "person"]
@@ -172,31 +154,6 @@ def run_yolo_tracking(
     plt.tight_layout()
     savefig(fig, output_dir, "01_crop_preview.png")
 
-    # -- Tap A|B division preview -------------------------------------------
-    if tap_divider:
-        crop_h, crop_w = crop_0.shape[:2]
-        lx1 = tap_divider[0] * crop_w
-        ly1 = tap_divider[1] * crop_h
-        lx2 = tap_divider[2] * crop_w
-        ly2 = tap_divider[3] * crop_h
-
-        fig, ax = plt.subplots(figsize=(8, 8))
-        ax.imshow(cv2.cvtColor(crop_0, cv2.COLOR_BGR2RGB))
-        ax.plot([lx1, lx2], [ly1, ly2], color="red", linewidth=2, linestyle="--",
-                label="A | B divider")
-        mid_x = (lx1 + lx2) / 2
-        ax.text(mid_x / 2, crop_h * 0.07, "TAP A", fontsize=18, fontweight="bold",
-                color="black", ha="center",
-                bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.7))
-        ax.text(mid_x + (crop_w - mid_x) / 2, crop_h * 0.07, "TAP B", fontsize=18,
-                fontweight="bold", color="black", ha="center",
-                bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.7))
-        ax.set_title("Tap A | B division")
-        ax.legend(loc="upper right")
-        ax.axis("off")
-        plt.tight_layout()
-        savefig(fig, output_dir, "01b_tap_division.png")
-
     # -- Load YOLO ----------------------------------------------------------
     is_world = "world" in str(model_name).lower()
     if is_world:
@@ -226,14 +183,6 @@ def run_yolo_tracking(
         print(f"Recording annotated video: {record_range[0]:.1f}s -> "
               f"{record_range[1]:.1f}s  "
               f"(frames {rec_start_frame}-{rec_stop_frame})")
-
-    # Pre-compute divider pixel coords for annotation
-    crop_ref = crop_normalized(frame_0, tap_roi)
-    div_px = None
-    if tap_divider:
-        ch, cw = crop_ref.shape[:2]
-        div_px = (int(tap_divider[0] * cw), int(tap_divider[1] * ch),
-                  int(tap_divider[2] * cw), int(tap_divider[3] * ch))
 
     while True:
         ret, frame = cap.read()
@@ -268,16 +217,6 @@ def run_yolo_tracking(
             # Write annotated frame if within recording range
             if rec_start_frame is not None and rec_start_frame <= frame_idx <= rec_stop_frame:
                 annotated = results.plot()
-                # Draw A|B divider line
-                if div_px:
-                    cv2.line(annotated, (div_px[0], div_px[1]), (div_px[2], div_px[3]),
-                             (0, 0, 255), 2)
-                    cv2.putText(annotated, "A",
-                                (div_px[0] // 2, 30),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
-                    cv2.putText(annotated, "B",
-                                ((div_px[0] + div_px[2]) // 2 + 20, 30),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 255), 2)
                 # Timestamp overlay
                 cv2.putText(annotated, f"{frame_idx / fps:.1f}s",
                             (annotated.shape[1] - 120, annotated.shape[0] - 15),
@@ -335,28 +274,17 @@ def run_yolo_tracking(
     # -- Filter cup tracks --------------------------------------------------
     cup_tracks = {tid: td for tid, td in track_data.items() if td["class"] == "cup"}
 
-    # Classify each cup track as Tap A or Tap B
-    crop_h, crop_w = crop_0.shape[:2]
     for tid, td in cup_tracks.items():
         bboxes = np.array(td["bboxes"])
         cx = (bboxes[:, 0] + bboxes[:, 2]) / 2
         cy = (bboxes[:, 1] + bboxes[:, 3]) / 2
-        if tap_divider:
-            lx1 = tap_divider[0] * crop_w
-            ly1 = tap_divider[1] * crop_h
-            lx2 = tap_divider[2] * crop_w
-            ly2 = tap_divider[3] * crop_h
-            td["tap"] = point_side_of_line(cx.mean(), cy.mean(), lx1, ly1, lx2, ly2)
-        else:
-            td["tap"] = "?"
-
         td["movement"] = float(np.sqrt(cx.std() ** 2 + cy.std() ** 2))
 
     print(f"\nFound {len(cup_tracks)} cup tracks (by YOLO track ID)")
     for tid in sorted(cup_tracks.keys()):
         td = cup_tracks[tid]
         dur = td["times"][-1] - td["times"][0]
-        print(f"  ID {tid:3d} [Tap {td['tap']}]: "
+        print(f"  ID {tid:3d}: "
               f"{td['times'][0]:.1f}s -> {td['times'][-1]:.1f}s  "
               f"dur={dur:.1f}s  dets={len(td['frames'])}  "
               f"move={td['movement']:.1f}px  "
@@ -379,168 +307,10 @@ def run_yolo_tracking(
     plt.tight_layout()
     savefig(fig, output_dir, "04_cup_tracks.png")
 
-    # -- Cup centers on crop with A|B divider (moving tracks only) ----------
-    if tap_divider:
-        lx1 = tap_divider[0] * crop_w
-        ly1 = tap_divider[1] * crop_h
-        lx2 = tap_divider[2] * crop_w
-        ly2 = tap_divider[3] * crop_h
-
-        fig, ax = plt.subplots(figsize=(8, 8))
-        ax.imshow(cv2.cvtColor(crop_0, cv2.COLOR_BGR2RGB))
-        ax.plot([lx1, lx2], [ly1, ly2], color="red", linewidth=2, linestyle="--",
-                label="A | B divider")
-
-        cmap = plt.cm.get_cmap("tab10")
-        plot_idx = 0
-        for tid in sorted_tids:
-            td = cup_tracks[tid]
-            if td["movement"] <= movement_threshold:
-                continue
-            bboxes = np.array(td["bboxes"])
-            cx = (bboxes[:, 0] + bboxes[:, 2]) / 2
-            cy = (bboxes[:, 1] + bboxes[:, 3]) / 2
-            c = cmap(plot_idx % 10)
-            ax.scatter(cx, cy, s=20, color=c, alpha=0.7, zorder=3,
-                       label=f"ID {tid} (Tap {td['tap']})")
-            plot_idx += 1
-
-        mid_x = (lx1 + lx2) / 2
-        ax.text(mid_x / 2, crop_h * 0.07, "TAP A", fontsize=16, fontweight="bold",
-                color="black", ha="center",
-                bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.7))
-        ax.text(mid_x + (crop_w - mid_x) / 2, crop_h * 0.07, "TAP B", fontsize=16,
-                fontweight="bold", color="black", ha="center",
-                bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.7))
-        ax.set_title("Cup centres by track ID (moving tracks only)")
-        ax.legend(loc="upper right", fontsize=7)
-        ax.axis("off")
-        plt.tight_layout()
-        savefig(fig, output_dir, "04b_cup_centers_by_tap.png")
-
-    # -- Person + cup co-occurrence -----------------------------------------
-    frames_with_person: set = set()
-    frames_with_cup: set = set()
-
-    for det in all_detections:
-        fidx, t_s, name = det[0], det[1], det[2]
-        if name == "person":
-            frames_with_person.add(fidx)
-        elif name == "cup":
-            frames_with_cup.add(fidx)
-
-    cooccurrence_frames = sorted(frames_with_person & frames_with_cup)
-    cooccurrence_times = [f / fps for f in cooccurrence_frames]
-
-    print(f"\nFrames with person: {len(frames_with_person)}")
-    print(f"Frames with cup:    {len(frames_with_cup)}")
-    print(f"Frames with BOTH:   {len(cooccurrence_frames)}")
-
-    segments = []
-    if cooccurrence_times:
-        gap_threshold = sample_every / fps * 3
-        seg_start = cooccurrence_times[0]
-        prev_t = cooccurrence_times[0]
-        for t_s in cooccurrence_times[1:]:
-            if t_s - prev_t > gap_threshold:
-                segments.append((seg_start, prev_t))
-                seg_start = t_s
-            prev_t = t_s
-        segments.append((seg_start, prev_t))
-
-        print("\nPour candidates (person+cup co-occurrence segments):")
-        for j, (s, e) in enumerate(segments):
-            print(f"  Segment {j}: {s:.1f}s -> {e:.1f}s  duration={e-s:.1f}s")
-
-    person_times = sorted([f / fps for f in frames_with_person])
-    cup_times = sorted([f / fps for f in frames_with_cup])
-
-    fig, ax = plt.subplots(figsize=(14, 3))
-    ax.scatter(cup_times, [0] * len(cup_times), s=12, color="blue", label="cup", alpha=0.6)
-    ax.scatter(person_times, [1] * len(person_times), s=12, color="orange",
-               label="person", alpha=0.6)
-    ax.scatter(cooccurrence_times, [2] * len(cooccurrence_times), s=12, color="red",
-               label="BOTH (pour?)", alpha=0.8)
-    for s, e in segments:
-        ax.axvspan(s, e, alpha=0.15, color="red")
-    ax.set_yticks([0, 1, 2])
-    ax.set_yticklabels(["cup", "person", "BOTH"])
-    ax.set_xlabel("Time (s)")
-    ax.set_title("Person + Cup co-occurrence = pour events")
-    ax.legend(loc="upper right")
-    plt.tight_layout()
-    savefig(fig, output_dir, "05_cooccurrence.png")
-
-    # -- Classify tracks & merge pour events --------------------------------
-    if cooccurrence_times:
-        print("\nCup tracks that overlap with person presence:")
-        for tid in sorted_tids:
-            td = cup_tracks[tid]
-            dur = td["times"][-1] - td["times"][0]
-            overlaps = any(td["times"][-1] >= s and td["times"][0] <= e
-                           for s, e in segments)
-            status = ("POUR" if overlaps and td["movement"] > movement_threshold
-                      else "background")
-            print(f"  ID {tid:3d} [Tap {td['tap']}]: "
-                  f"move={td['movement']:.1f}px  dur={dur:.1f}s  "
-                  f"overlaps_person={overlaps}  -> {status}")
-
-    pour_tracks = []
-    for tid in sorted_tids:
-        td = cup_tracks[tid]
-        overlaps = (cooccurrence_times and
-                    any(td["times"][-1] >= s and td["times"][0] <= e
-                        for s, e in segments))
-        if overlaps and td["movement"] > movement_threshold:
-            pour_tracks.append({"track_ids": [tid], "start": td["times"][0],
-                                 "end": td["times"][-1],
-                                 "movement": td["movement"], "tap": td["tap"]})
-
-    pour_tracks.sort(key=lambda x: x["start"])
-    merged_pours = []
-    for pt in pour_tracks:
-        if (merged_pours
-                and pt["start"] - merged_pours[-1]["end"] < merge_gap
-                and pt["tap"] == merged_pours[-1]["tap"]):
-            merged_pours[-1]["end"] = max(merged_pours[-1]["end"], pt["end"])
-            merged_pours[-1]["track_ids"].extend(pt["track_ids"])
-        else:
-            merged_pours.append(pt.copy())
-
-    print(f"\nPOUR tracks before merge: {len(pour_tracks)}")
-    print(f"Pour events after merge:  {len(merged_pours)}")
-    for j, mp in enumerate(merged_pours):
-        dur = mp["end"] - mp["start"]
-        print(f"  Pour {j+1} [Tap {mp['tap']}]: {mp['start']:.1f}s -> {mp['end']:.1f}s  "
-              f"duration={dur:.1f}s  from track IDs {mp['track_ids']}")
-
-    # -- Final timeline plot ------------------------------------------------
-    tap_colors = {"A": "green", "B": "purple", "?": "gray"}
-    fig, ax = plt.subplots(figsize=(14, 3))
-    ax.scatter(cup_times, [0] * len(cup_times), s=8, color="blue", alpha=0.3, label="cup")
-    ax.scatter(person_times, [1] * len(person_times), s=8, color="orange", alpha=0.3,
-               label="person")
-    for j, mp in enumerate(merged_pours):
-        c = tap_colors.get(mp["tap"], "gray")
-        ax.axvspan(mp["start"], mp["end"], alpha=0.25, color=c,
-                   label=(f"Tap {mp['tap']}"
-                          if mp["tap"] not in [m["tap"] for m in merged_pours[:j]]
-                          else None))
-        ax.text((mp["start"] + mp["end"]) / 2, 1.5, f"POUR {j+1}\nTap {mp['tap']}",
-                ha="center", fontweight="bold", color=c)
-    ax.set_yticks([0, 1])
-    ax.set_yticklabels(["cup", "person"])
-    ax.set_xlabel("Time (s)")
-    ax.set_title(f"Final result: {len(merged_pours)} pour event(s) detected")
-    ax.legend(loc="upper right")
-    plt.tight_layout()
-    savefig(fig, output_dir, "06_final_pours.png")
-
     # -- Save summary JSON --------------------------------------------------
     summary = {
         "video": str(video_path),
         "tap_roi": list(tap_roi),
-        "tap_divider": list(tap_divider) if tap_divider else None,
         "tracker": tracker,
         "fps": fps,
         "total_frames": total_frames,
@@ -549,11 +319,6 @@ def run_yolo_tracking(
         "total_detections": len(all_detections),
         "unique_track_ids": len(track_data),
         "cup_tracks": len(cup_tracks),
-        "pour_events": [
-            {"id": j + 1, "tap": mp["tap"], "start_s": mp["start"], "end_s": mp["end"],
-             "duration_s": mp["end"] - mp["start"], "track_ids": mp["track_ids"]}
-            for j, mp in enumerate(merged_pours)
-        ],
     }
     summary_path = output_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2))
@@ -600,47 +365,21 @@ def main():
               "or pass --tap-roi X1 Y1 X2 Y2.")
         sys.exit(1)
 
-    # -- Resolve TAP divider (A|B line) -------------------------------------
-    tap_divider = None
-    if args.tap_divider:
-        tap_divider = tuple(args.tap_divider)
-        print(f"TAP_DIVIDER from CLI: {tuple(round(v, 4) for v in tap_divider)}")
-    elif args.crop_area:
-        print("Opening divider selector on cropped frame ...")
-        crop_for_divider = crop_normalized(frame_0, tap_roi)
-        tap_divider = select_divider_interactive(crop_for_divider)
-        print(f"TAP_DIVIDER = {tuple(round(v, 4) for v in tap_divider)}")
-    elif roi_json.exists():
-        data = json.loads(roi_json.read_text())
-        if "tap_divider" in data:
-            tap_divider = tuple(data["tap_divider"])
-            print(f"TAP_DIVIDER loaded from {roi_json}: "
-                  f"{tuple(round(v, 4) for v in tap_divider)}")
-
     if args.crop_area:
         save_data = {"tap_roi": list(tap_roi)}
-        if tap_divider:
-            save_data["tap_divider"] = list(tap_divider)
         roi_json.write_text(json.dumps(save_data, indent=2))
         print(f"ROI config saved to {roi_json}")
-
-    if tap_divider is None:
-        print("WARNING: No tap divider defined. All pours will be unclassified.\n"
-              "  Re-run with --crop-area or pass --tap-divider X1 Y1 X2 Y2.")
 
     # -- Run tracking -------------------------------------------------------
     run_yolo_tracking(
         video_path=args.video,
         output_dir=args.output,
         tap_roi=tap_roi,
-        tap_divider=tap_divider,
         model_name=args.model,
         classes=args.classes,
         sample_every=args.sample_every,
         conf_threshold=args.conf_threshold,
         tracker=args.tracker,
-        movement_threshold=args.movement_threshold,
-        merge_gap=args.merge_gap,
         preview_second=args.preview_second,
         record_range=tuple(args.record_range) if args.record_range else None,
     )

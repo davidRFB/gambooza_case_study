@@ -2,10 +2,10 @@
 Unified beer tap counting pipeline.
 
 Orchestrates four stages:
-  1. ROI selection — crop area + A/B divider
+  1. ROI selection — crop area + SAM3 tap bboxes (divider optional)
   2. YOLO tracking — detect and track cups with YOLO-World + BoT-SORT
-  3. Relink — merge fragmented tracks via temporal co-existence constraints
-  4. SAM3 tap tracking — segment tap handles and track centroid positions
+  3. Relink — merge fragmented tracks + classify pours (movement + frame count)
+  4. SAM3 tap tracking — segment tap handles, determine which tap via centroid Y
 
 Usage
 -----
@@ -24,6 +24,7 @@ python notebooks/pipeline.py --config config/pipeline.yaml --force
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import yaml
@@ -102,12 +103,12 @@ def stage_roi_selection(cfg: dict, interactive: bool = False, force: bool = Fals
         else:
             print(f"WARNING: roi_json path not found: {ext_path}, falling back to defaults.")
 
-    # Skip if already done and not forced
+    # Skip if already done and not forced (divider is optional)
     if roi_json.exists() and not force and not interactive:
         data = load_roi_config(roi_json)
-        if "tap_roi" in data and "tap_divider" in data:
+        if "tap_roi" in data:
             cfg["_tap_roi"] = tuple(data["tap_roi"])
-            cfg["_tap_divider"] = tuple(data["tap_divider"])
+            cfg["_tap_divider"] = tuple(data["tap_divider"]) if "tap_divider" in data else None
             if "sam3_tap_bboxes" in data:
                 cfg.setdefault("sam3", {})["tap_bboxes"] = data["sam3_tap_bboxes"]
             print(f"ROI already resolved in {roi_json}, skipping.")
@@ -173,7 +174,7 @@ def stage_yolo_tracking(cfg: dict, force: bool = False):
         print(f"raw_detections.csv already exists at {raw_csv}, skipping.")
         return
 
-    tap_roi, tap_divider = _get_roi(cfg)
+    tap_roi, _ = _get_roi(cfg)
 
     record_range = yolo_cfg.get("record_range")
     if record_range:
@@ -183,14 +184,11 @@ def stage_yolo_tracking(cfg: dict, force: bool = False):
         video_path=video_path,
         output_dir=output_dir,
         tap_roi=tap_roi,
-        tap_divider=tap_divider,
         model_name=yolo_cfg.get("model", "yolov8x-worldv2.pt"),
         classes=yolo_cfg.get("classes", ["cup", "person"]),
         sample_every=yolo_cfg.get("sample_every", 1),
         conf_threshold=yolo_cfg.get("conf_threshold", 0.25),
         tracker=yolo_cfg.get("tracker", "config/botsort.yaml"),
-        movement_threshold=yolo_cfg.get("movement_threshold", 5.0),
-        merge_gap=yolo_cfg.get("merge_gap", 5.0),
         preview_second=yolo_cfg.get("preview_second", 60.0),
         record_range=record_range,
     )
@@ -199,7 +197,7 @@ def stage_yolo_tracking(cfg: dict, force: bool = False):
 # ── Stage 3b: Relink ─────────────────────────────────────────────────────────
 
 def stage_relink(cfg: dict, force: bool = False):
-    """Relink fragmented cup tracks."""
+    """Relink fragmented cup tracks and classify pour events."""
     from importlib import import_module
     relink_mod = import_module("05_relink_coexistence")
 
@@ -208,8 +206,11 @@ def stage_relink(cfg: dict, force: bool = False):
     relink_cfg = cfg.get("relink", {})
 
     relinked_csv = output_dir / "relinked_detections.csv"
-    if relinked_csv.exists() and not force:
+    pour_json = output_dir / "pour_events.json"
+    if relinked_csv.exists() and pour_json.exists() and not force:
+        import json
         print(f"relinked_detections.csv already exists at {relinked_csv}, skipping.")
+        cfg["_pour_events"] = json.loads(pour_json.read_text())
         return
 
     raw_csv = output_dir / "raw_detections.csv"
@@ -221,21 +222,30 @@ def stage_relink(cfg: dict, force: bool = False):
     if record_range:
         record_range = tuple(record_range)
 
-    relink_mod.run_relink(
+    _csv, pour_events = relink_mod.run_relink(
         input_csv=raw_csv,
         output_dir=output_dir,
         overlap_threshold=relink_cfg.get("overlap_threshold", 15),
         min_track_dets=relink_cfg.get("min_track_dets", 2),
         max_interp_gap=relink_cfg.get("max_interp_gap", 10),
-        video_path=video_path if record_range else None,
+        min_pour_frames=relink_cfg.get("min_pour_frames", 30),
+        movement_threshold=relink_cfg.get("movement_threshold", 5.0),
+        video_padding=relink_cfg.get("video_padding", 2.0),
+        video_path=video_path,
         record_range=record_range,
     )
+    cfg["_pour_events"] = pour_events
 
 
 # ── Stage 4: SAM3 Tap Handle Tracking ────────────────────────────────────────
 
 def stage_sam3_tap_tracking(cfg: dict, interactive: bool = False, force: bool = False):
-    """Run SAM3VideoPredictor on cropped video to track tap handles."""
+    """Run SAM3VideoPredictor on cropped video to track tap handles.
+
+    Uses pour frame ranges from the relink stage (if available) so the SAM
+    output video only covers the movement periods, matching the YOLO video.
+    """
+    import json as _json
     from sam3_tracking import run_sam3_video_tracking
 
     video_path = Path(cfg["video_path"])
@@ -266,11 +276,19 @@ def stage_sam3_tap_tracking(cfg: dict, interactive: bool = False, force: bool = 
             crop = crop_normalized(frame_0, tap_roi)
             tap_bboxes = select_tap_bboxes_interactive(crop, object_labels)
             data["sam3_tap_bboxes"] = tap_bboxes
-            roi_json.write_text(__import__("json").dumps(data, indent=2))
+            roi_json.write_text(_json.dumps(data, indent=2))
             print(f"SAM3 tap bboxes saved to {roi_json}")
         else:
             print("ERROR: No SAM3 tap bboxes found. Run with --interactive or set in config.")
             sys.exit(1)
+
+    # Load pour frame ranges from relink stage (for selective video output)
+    frame_ranges = None
+    ranges_path = output_dir / "pour_frame_ranges.json"
+    if ranges_path.exists():
+        ranges_data = _json.loads(ranges_path.read_text())
+        frame_ranges = [(r["start_frame"], r["end_frame"]) for r in ranges_data]
+        print(f"SAM3 will output video for {len(frame_ranges)} pour segment(s)")
 
     run_sam3_video_tracking(
         video_path=video_path,
@@ -284,6 +302,7 @@ def stage_sam3_tap_tracking(cfg: dict, interactive: bool = False, force: bool = 
         frame_skip=sam3_cfg.get("frame_skip", 5),
         save_snapshot_every=sam3_cfg.get("save_snapshot_every", 50),
         half=sam3_cfg.get("half", True),
+        frame_ranges=frame_ranges,
     )
 
 
@@ -342,7 +361,23 @@ def main():
         sam3_cfg = cfg.setdefault("sam3", {})
         sam3_cfg["tap_bboxes"] = None
 
+    # Video metadata
+    video_path = Path(cfg["video_path"])
+    cap = cv2.VideoCapture(str(video_path))
+    video_fps = cap.get(cv2.CAP_PROP_FPS)
+    video_total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    video_duration = video_total_frames / video_fps if video_fps else 0
+    cap.release()
+
+    print(f"\n{'=' * 60}")
+    print(f"  VIDEO: {video_path.name}")
+    print(f"  {video_fps:.0f} fps | {video_total_frames} frames | "
+          f"{video_duration:.1f}s ({video_duration/60:.1f} min)")
+    print(f"{'=' * 60}")
+
     stages_enabled = cfg.get("stages", {})
+    stage_times: dict[str, float] = {}
+    pipeline_t0 = time.time()
 
     for stage_name in STAGES:
         if args.stage and args.stage != stage_name:
@@ -358,17 +393,31 @@ def main():
         print(f"{'=' * 60}")
 
         func = STAGE_FUNCS[stage_name]
+        t0 = time.time()
 
-        # Pass interactive/force to stages that support it
         if stage_name in ("roi_selection", "sam3_tap_tracking"):
             func(cfg, interactive=args.interactive, force=args.force)
         else:
             func(cfg, force=args.force)
 
+        elapsed = time.time() - t0
+        stage_times[stage_name] = elapsed
+        print(f"  [{stage_name}] completed in {elapsed:.1f}s")
+
+    total_elapsed = time.time() - pipeline_t0
+
     print(f"\n{'=' * 60}")
     print(f"  PIPELINE COMPLETE")
     print(f"  Outputs in: {cfg['output_dir']}")
     print(f"{'=' * 60}")
+    print(f"\n  Video: {video_path.name} "
+          f"({video_duration:.1f}s / {video_duration/60:.1f} min)")
+    print(f"  Stage timings:")
+    for name, elapsed in stage_times.items():
+        print(f"    {name:25s} {elapsed:8.1f}s")
+    print(f"    {'─' * 35}")
+    print(f"    {'TOTAL':25s} {total_elapsed:8.1f}s")
+    print()
 
 
 if __name__ == "__main__":

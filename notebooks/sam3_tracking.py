@@ -43,6 +43,7 @@ def run_sam3_video_tracking(
     frame_skip: int = 5,
     save_snapshot_every: int = 50,
     half: bool = True,
+    frame_ranges: list[tuple[int, int]] | None = None,
 ) -> Path:
     """Run SAM3VideoPredictor on the cropped video region.
 
@@ -50,6 +51,11 @@ def run_sam3_video_tracking(
     2. Initialize SAM3VideoPredictor with bounding boxes on the first cropped frame.
     3. Propagate masks and extract per-frame centroids.
     4. Save outputs: sam3_tracked.mp4, sam3_centroids.csv, centroid_trajectory.png
+
+    When *frame_ranges* is provided (list of (start_frame, end_frame) tuples),
+    only frames within those ranges are written to the output video. All frames
+    are still processed by SAM for propagation continuity, but only the relevant
+    segments appear in the output video.
 
     Returns path to sam3_centroids.csv.
     """
@@ -85,7 +91,18 @@ def run_sam3_video_tracking(
     if max_frames is not None:
         total_frames = min(total_frames, max_frames)
 
-    print(f"\nCropped video: {vid_w}x{vid_h}, {total_frames} frames, {fps:.1f} fps")
+    # Build set of frames to include in the output video
+    video_frame_set: set[int] | None = None
+    if frame_ranges is not None:
+        video_frame_set = set()
+        for rng_start, rng_end in frame_ranges:
+            video_frame_set.update(range(rng_start, rng_end + 1))
+        print(f"\nCropped video: {vid_w}x{vid_h}, {total_frames} frames, {fps:.1f} fps")
+        print(f"  frame_ranges: {len(frame_ranges)} segment(s), "
+              f"{len(video_frame_set)} frames for output video")
+    else:
+        print(f"\nCropped video: {vid_w}x{vid_h}, {total_frames} frames, {fps:.1f} fps")
+
     for label, bbox in zip(object_labels, tap_bboxes):
         print(f"  [{label}] bbox -> {[round(v, 1) for v in bbox]}")
 
@@ -136,12 +153,10 @@ def run_sam3_video_tracking(
                 color = colors[obj_idx % len(colors)]
                 label = object_labels[obj_idx]
 
-                # Color overlay
                 overlay[mask] = (
                     overlay[mask] * 0.5 + np.array(color[::-1]) * 0.5
                 ).astype(np.uint8)
 
-                # Centroid
                 ys, xs = np.where(mask)
                 if len(xs):
                     cx, cy = int(xs.mean()), int(ys.mean())
@@ -150,15 +165,18 @@ def run_sam3_video_tracking(
                     cv2.putText(overlay, label, (cx + 10, cy),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-        # Frame counter
         cv2.putText(overlay, f"frame {frame_idx}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
-        out_video.write(overlay)
+        # Write to video only if frame is in the desired ranges (or all frames)
+        write_frame = (video_frame_set is None or frame_idx in video_frame_set)
+        if write_frame:
+            out_video.write(overlay)
 
         if save_snapshot_every > 0 and frame_idx % save_snapshot_every == 0:
             print(f"  {frame_idx}/{total_frames}")
-            cv2.imwrite(str(frames_dir / f"frame_{frame_idx:05d}.png"), overlay)
+            if write_frame:
+                cv2.imwrite(str(frames_dir / f"frame_{frame_idx:05d}.png"), overlay)
 
     out_video.release()
     print(f"\nSAM3 tracked video saved to {out_video_path}")
@@ -206,7 +224,6 @@ def run_sam3_video_tracking(
     ax.set_ylabel("Centroid Y (pixels)")
     ax.set_title("Tap Handle Centroid Y Over Time")
     ax.legend()
-    ax.invert_yaxis()
     plt.tight_layout()
     savefig(fig, output_dir, "centroid_trajectory.png")
 

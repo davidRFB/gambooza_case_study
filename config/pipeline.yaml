@@ -8,7 +8,7 @@
 
 # ── Video & Output ────────────────────────────────────────────────────────────
 video_path: data/videos/cerveza2.mp4
-output_dir: results/pipeline_run
+output_dir: results/pipeline_cerveza2
 
 # ── Stage Control ─────────────────────────────────────────────────────────────
 # Set false to skip a stage. Existing outputs are reused unless --force is set.
@@ -21,10 +21,11 @@ stages:
 # ── ROI & Divider (Stage 1+2) ────────────────────────────────────────────────
 # Normalised 0-1 coordinates. Set to null to trigger interactive selection.
 # Set roi_json to reuse a tap_roi.json from another run (skips interactive).
+# tap_divider is optional — tap assignment is done by SAM centroid Y.
 roi:
   roi_json: null           # e.g. results/other_run/tap_roi.json
   tap_roi: null            # [x1, y1, x2, y2] or null
-  tap_divider: null        # [x1, y1, x2, y2] or null
+  tap_divider: null        # [x1, y1, x2, y2] or null (optional, not used by YOLO/relink)
 
 # ── YOLO Tracking (Stage 3a) ─────────────────────────────────────────────────
 yolo:
@@ -33,17 +34,18 @@ yolo:
   sample_every: 1          # process every Nth frame (1 = all)
   conf_threshold: 0.25
   tracker: config/botsort.yaml
-  movement_threshold: 5.0  # min px spread to count as pour
-  merge_gap: 5.0           # merge pour events within this many seconds
   preview_second: 60.0
-  record_range: null       # [start_s, stop_s] or null
+  record_range: null       # [start_s, stop_s] or null (manual override)
 
 # ── Relink (Stage 3b) ────────────────────────────────────────────────────────
 relink:
   overlap_threshold: 15    # frames of co-existence -> incompatible
   min_track_dets: 2        # ignore tracks with fewer detections
   max_interp_gap: 10       # interpolate gaps <= this many frames
-  record_range: null       # [start_s, stop_s] or null
+  min_pour_frames: 30      # minimum frames after relinking to count as pour
+  movement_threshold: 5.0  # min spatial spread (px) to count as pour
+  video_padding: 2.0       # seconds of padding around pour events in auto-video
+  record_range: null       # [start_s, stop_s] or null (manual override)
 
 # ── SAM3 Tap Handle Tracking (Stage 4) ───────────────────────────────────────
 sam3:

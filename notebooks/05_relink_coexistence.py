@@ -54,9 +54,12 @@ from common import crop_normalized, savefig
 
 # ── Defaults ────────────────────────────────────────────────────────────────
 
-OVERLAP_THRESHOLD = 15  # frames of co-existence → incompatible
-MIN_TRACK_DETS = 2      # ignore single-detection noise
-MAX_INTERP_GAP = 10     # interpolate gaps ≤ 0.5 s
+OVERLAP_THRESHOLD = 15   # frames of co-existence → incompatible
+MIN_TRACK_DETS = 2       # ignore single-detection noise
+MAX_INTERP_GAP = 10      # interpolate gaps ≤ 0.5 s
+MIN_POUR_FRAMES = 30     # minimum frames after relinking to count as pour
+MOVEMENT_THRESHOLD = 5.0 # minimum spatial spread (px) to count as pour
+VIDEO_PADDING = 2.0      # seconds of padding around pour events in auto-video
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
 
@@ -77,6 +80,12 @@ def parse_args():
                    help="Ignore tracks with fewer detections than this.")
     p.add_argument("--max-interp-gap", type=int, default=MAX_INTERP_GAP,
                    help="Interpolate detection gaps up to this many frames.")
+    p.add_argument("--min-pour-frames", type=int, default=MIN_POUR_FRAMES,
+                   help="Minimum frames after relinking to count a cup as a pour.")
+    p.add_argument("--movement-threshold", type=float, default=MOVEMENT_THRESHOLD,
+                   help="Minimum spatial spread (px) to count a cup as a pour.")
+    p.add_argument("--video-padding", type=float, default=VIDEO_PADDING,
+                   help="Seconds of padding around pour events in auto-generated video.")
     p.add_argument("--video", type=Path,
                    help="Path to original video file (required for --record-range).")
     p.add_argument("--record-range", nargs=2, type=float,
@@ -199,87 +208,74 @@ def draw_detections(frame: np.ndarray, dets: pd.DataFrame,
 
 
 def render_annotated_video(video_path: Path, output_dir: Path,
-                           record_range: tuple, df: pd.DataFrame):
-    """Read the original video frame-by-frame and render relinked detections."""
+                           frame_ranges: list[tuple[int, int]],
+                           df: pd.DataFrame,
+                           filename: str = "relinked_clip.mp4"):
+    """Render annotated video for specific frame ranges with relinked detections.
+
+    *frame_ranges* is a list of (start_frame, end_frame) tuples. Only frames
+    within these ranges are rendered, concatenated into a single output video.
+    """
     roi_json = output_dir / "tap_roi.json"
     if not roi_json.exists():
         print(f"  WARNING: {roi_json} not found — cannot crop. Skipping video.")
         return
     roi_cfg = json.loads(roi_json.read_text())
     tap_roi = tuple(roi_cfg["tap_roi"])
-    tap_divider = tuple(roi_cfg["tap_divider"]) if "tap_divider" in roi_cfg else None
 
     cap = cv2.VideoCapture(str(video_path))
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    rec_start = int(record_range[0] * fps)
-    rec_stop = int(record_range[1] * fps)
-    print(f"\nRendering annotated video: {record_range[0]:.1f}s → "
-          f"{record_range[1]:.1f}s  (frames {rec_start}–{rec_stop})")
+    needed_frames: set[int] = set()
+    for start, stop in frame_ranges:
+        needed_frames.update(range(start, min(stop + 1, total_frames)))
+
+    print(f"\nRendering annotated video for {len(frame_ranges)} segment(s) "
+          f"({len(needed_frames)} frames total)")
 
     frame_dets: dict[int, pd.DataFrame] = {}
     for f, grp in df.groupby("frame"):
         f = int(f)
-        if rec_start <= f <= rec_stop:
+        if f in needed_frames:
             frame_dets[f] = grp
 
     unique_tids = sorted(df["track_id"].unique())
     track_color_map = {int(tid): _TRACK_COLORS[i % len(_TRACK_COLORS)]
                        for i, tid in enumerate(unique_tids)}
 
-    ref_frame_idx = 0
-    cap.set(cv2.CAP_PROP_POS_FRAMES, ref_frame_idx)
-    ret, ref_frame = cap.read()
-    crop_ref = crop_normalized(ref_frame, tap_roi)
-    ch, cw = crop_ref.shape[:2]
-
-    div_px = None
-    if tap_divider:
-        div_px = (int(tap_divider[0] * cw), int(tap_divider[1] * ch),
-                  int(tap_divider[2] * cw), int(tap_divider[3] * ch))
-
-    cap.set(cv2.CAP_PROP_POS_FRAMES, rec_start)
     video_writer = None
-    rec_path = output_dir / "relinked_clip.mp4"
+    rec_path = output_dir / filename
 
-    for fidx in range(rec_start, min(rec_stop + 1, total_frames)):
-        ret, frame = cap.read()
-        if not ret:
-            break
-        crop = crop_normalized(frame, tap_roi)
+    for seg_start, seg_stop in frame_ranges:
+        seg_stop = min(seg_stop, total_frames - 1)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, seg_start)
 
-        if fidx in frame_dets:
-            crop = draw_detections(crop, frame_dets[fidx], track_color_map)
+        for fidx in range(seg_start, seg_stop + 1):
+            ret, frame = cap.read()
+            if not ret:
+                break
+            crop = crop_normalized(frame, tap_roi)
 
-        if div_px:
-            cv2.line(crop, (div_px[0], div_px[1]), (div_px[2], div_px[3]),
-                     (0, 0, 255), 2)
-            cv2.putText(crop, "A", (div_px[0] // 2, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
-            cv2.putText(crop, "B",
-                        ((div_px[0] + div_px[2]) // 2 + 20, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 255), 2)
+            if fidx in frame_dets:
+                crop = draw_detections(crop, frame_dets[fidx], track_color_map)
 
-        cv2.putText(crop, f"{fidx / fps:.1f}s",
-                    (crop.shape[1] - 120, crop.shape[0] - 15),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.putText(crop, f"{fidx / fps:.1f}s",
+                        (crop.shape[1] - 120, crop.shape[0] - 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-        if video_writer is None:
-            h_out, w_out = crop.shape[:2]
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            video_writer = cv2.VideoWriter(str(rec_path), fourcc, fps,
-                                           (w_out, h_out))
-            print(f"  Video writer opened: {rec_path} ({w_out}x{h_out})")
-        video_writer.write(crop)
-
-        if (fidx - rec_start) % 100 == 0:
-            print(f"  Frame {fidx}/{rec_stop}", end="\r")
+            if video_writer is None:
+                h_out, w_out = crop.shape[:2]
+                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                video_writer = cv2.VideoWriter(str(rec_path), fourcc, fps,
+                                               (w_out, h_out))
+                print(f"  Video writer opened: {rec_path} ({w_out}x{h_out})")
+            video_writer.write(crop)
 
     cap.release()
     if video_writer is not None:
         video_writer.release()
-        print(f"  Annotated video saved to {rec_path}                ")
+        print(f"  Annotated video saved to {rec_path}")
 
 
 # ── Core relink function (importable by pipeline.py) ───────────────────────
@@ -291,10 +287,18 @@ def run_relink(
     overlap_threshold: int = OVERLAP_THRESHOLD,
     min_track_dets: int = MIN_TRACK_DETS,
     max_interp_gap: int = MAX_INTERP_GAP,
+    min_pour_frames: int = MIN_POUR_FRAMES,
+    movement_threshold: float = MOVEMENT_THRESHOLD,
+    video_padding: float = VIDEO_PADDING,
     video_path: Path | None = None,
     record_range: tuple | None = None,
-) -> Path:
-    """Run track relinking and return path to relinked_detections.csv."""
+) -> tuple[Path, list[dict]]:
+    """Run track relinking and pour classification.
+
+    Returns (path to relinked_detections.csv, list of pour event dicts).
+    Each pour dict has: cup_id, frame_start, frame_end, time_start, time_end,
+    n_frames, movement.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── 1. Load raw detections ──────────────────────────────────────────
@@ -400,14 +404,61 @@ def run_relink(
           f"({relinked_cups['interpolated'].sum()} interpolated)")
     print(f"  Unique cup IDs:   {sorted(relinked_cups['track_id'].unique())}")
 
-    # ── 8. Before / after timeline ──────────────────────────────────────
+    # ── 8. Pour classification ──────────────────────────────────────────
+    # Determine FPS from the data (time_s / frame)
+    fps_est = 1.0
+    if len(df) > 1:
+        non_zero = df[df["frame"] > 0].head(100)
+        if len(non_zero):
+            fps_est = float((non_zero["frame"] / non_zero["time_s"]).median())
+
+    pour_events: list[dict] = []
+    tids_after = sorted(relinked_cups["track_id"].unique())
+
+    print(f"\nPour classification (min_frames={min_pour_frames}, "
+          f"movement_threshold={movement_threshold:.1f}px):")
+    for tid in tids_after:
+        sub = relinked_cups[relinked_cups["track_id"] == tid].sort_values("frame")
+        n_frames = len(sub)
+        cx_vals = sub["cx"].values
+        cy_vals = sub["cy"].values
+        movement = float(np.sqrt(np.std(cx_vals) ** 2 + np.std(cy_vals) ** 2))
+
+        is_pour = n_frames >= min_pour_frames and movement > movement_threshold
+        status = "POUR" if is_pour else "skip"
+
+        frame_start = int(sub["frame"].iloc[0])
+        frame_end = int(sub["frame"].iloc[-1])
+        time_start = float(sub["time_s"].iloc[0])
+        time_end = float(sub["time_s"].iloc[-1])
+
+        print(f"  Cup {tid:3d}: {time_start:.1f}s→{time_end:.1f}s  "
+              f"frames={n_frames}  move={movement:.1f}px  → {status}")
+
+        if is_pour:
+            pour_events.append({
+                "cup_id": int(tid),
+                "frame_start": frame_start,
+                "frame_end": frame_end,
+                "time_start": time_start,
+                "time_end": time_end,
+                "n_frames": n_frames,
+                "movement": movement,
+            })
+
+    print(f"\nTotal pour events: {len(pour_events)}")
+
+    # Save pour events JSON
+    pour_json_path = output_dir / "pour_events.json"
+    pour_json_path.write_text(json.dumps(pour_events, indent=2))
+    print(f"Pour events saved to {pour_json_path}")
+
+    # ── 9. Before / after timeline ──────────────────────────────────────
     cups_before = pd.read_csv(input_csv)
     cups_before = cups_before[cups_before["class"] == "cup"]
     tids_before = sorted(cups_before["track_id"].unique())
 
     cups_after = relinked_cups
-    tids_after = sorted(cups_after["track_id"].unique())
-
     n_before, n_after = len(tids_before), len(tids_after)
 
     fig, (ax1, ax2) = plt.subplots(
@@ -428,29 +479,35 @@ def run_relink(
     ax1.set_ylabel("Track ID")
 
     cmap = plt.colormaps["tab10"]
+    pour_cup_ids = {pe["cup_id"] for pe in pour_events}
     for row, tid in enumerate(tids_after):
         sub = cups_after[cups_after["track_id"] == tid]
         real = sub[~sub["interpolated"]]
         interp = sub[sub["interpolated"]]
         t0, t1 = sub["time_s"].min(), sub["time_s"].max()
-        ax2.barh(row, t1 - t0, left=t0, height=0.6, alpha=0.5,
-                 color=cmap(row % 10))
+        color = cmap(row % 10)
+        alpha = 0.7 if tid in pour_cup_ids else 0.2
+        ax2.barh(row, t1 - t0, left=t0, height=0.6, alpha=alpha, color=color)
         ax2.scatter(real["time_s"], [row] * len(real),
                     s=6, color="black", zorder=3)
         if len(interp):
             ax2.scatter(interp["time_s"], [row] * len(interp),
                         s=4, color="red", zorder=3, alpha=0.5, marker="x")
+        label = f"Cup {tid}"
+        if tid in pour_cup_ids:
+            label += " (POUR)"
+        ax2.text(t0, row + 0.3, label, fontsize=7, va="bottom")
     ax2.set_yticks(range(n_after))
     ax2.set_yticklabels([f"Cup {t}" for t in tids_after], fontsize=9)
-    ax2.set_title(f"AFTER re-linking — {n_after} physical cups  "
-                  f"(red × = interpolated)")
+    ax2.set_title(f"AFTER re-linking — {n_after} physical cups, "
+                  f"{len(pour_events)} pours  (red × = interpolated)")
     ax2.set_ylabel("Cup ID")
     ax2.set_xlabel("Time (s)")
 
     plt.tight_layout()
     savefig(fig, output_dir, "07_relink_before_after.png")
 
-    # ── 9. x / y vs frame (after re-linking) ────────────────────────────
+    # ── 10. x / y vs frame (after re-linking) ───────────────────────────
     fig, (ax_x, ax_y) = plt.subplots(2, 1, figsize=(12, 8))
     for tid in tids_after:
         sub = cups_after[cups_after["track_id"] == tid].sort_values("frame")
@@ -473,21 +530,60 @@ def run_relink(
     plt.tight_layout()
     savefig(fig, output_dir, "08_relinked_xy_vs_frame.png")
 
-    # ── 10. Annotated video export ──────────────────────────────────────
-    if record_range:
-        if not video_path:
-            print("\nERROR: record_range requires video_path")
-        elif not video_path.exists():
-            print(f"\nERROR: video not found: {video_path}")
-        else:
-            render_annotated_video(video_path, output_dir, record_range, df)
+    # ── 11. Auto-generate annotated video for pour movement ranges ──────
+    if pour_events and video_path and video_path.exists():
+        pad_frames = int(video_padding * fps_est)
+        frame_ranges = []
+        for pe in pour_events:
+            f_start = max(0, pe["frame_start"] - pad_frames)
+            f_end = pe["frame_end"] + pad_frames
+            frame_ranges.append((f_start, f_end))
+
+        # Merge overlapping ranges
+        frame_ranges.sort()
+        merged_ranges: list[tuple[int, int]] = [frame_ranges[0]]
+        for start, end in frame_ranges[1:]:
+            if start <= merged_ranges[-1][1]:
+                merged_ranges[-1] = (merged_ranges[-1][0],
+                                     max(merged_ranges[-1][1], end))
+            else:
+                merged_ranges.append((start, end))
+
+        print(f"\nAuto-video: {len(merged_ranges)} segment(s) with "
+              f"{video_padding:.1f}s padding")
+        for i, (s, e) in enumerate(merged_ranges):
+            print(f"  Segment {i}: frames {s}–{e} "
+                  f"({s / fps_est:.1f}s → {e / fps_est:.1f}s)")
+
+        render_annotated_video(video_path, output_dir, merged_ranges, df,
+                               filename="relinked_pour_clip.mp4")
+
+        # Save the frame ranges for SAM stage
+        ranges_path = output_dir / "pour_frame_ranges.json"
+        ranges_path.write_text(json.dumps(
+            [{"start_frame": s, "end_frame": e} for s, e in merged_ranges],
+            indent=2,
+        ))
+        print(f"Pour frame ranges saved to {ranges_path}")
+
+    elif record_range:
+        # Fallback: use explicit record_range (backward compat)
+        if video_path and video_path.exists():
+            cap = cv2.VideoCapture(str(video_path))
+            fps_vid = cap.get(cv2.CAP_PROP_FPS)
+            cap.release()
+            rec_start = int(record_range[0] * fps_vid)
+            rec_stop = int(record_range[1] * fps_vid)
+            render_annotated_video(video_path, output_dir,
+                                   [(rec_start, rec_stop)], df)
 
     print(f"\n{'=' * 60}")
     print(f"  BEFORE: {n_before} cup track IDs")
     print(f"  AFTER:  {n_after} physical cups")
+    print(f"  POURS:  {len(pour_events)}")
     print(f"{'=' * 60}")
 
-    return out_csv
+    return out_csv, pour_events
 
 
 # ── Main (standalone CLI) ──────────────────────────────────────────────────
@@ -495,15 +591,19 @@ def run_relink(
 
 def main():
     args = parse_args()
-    run_relink(
+    _csv, pour_events = run_relink(
         input_csv=args.input,
         output_dir=args.output,
         overlap_threshold=args.overlap_threshold,
         min_track_dets=args.min_track_dets,
         max_interp_gap=args.max_interp_gap,
+        min_pour_frames=args.min_pour_frames,
+        movement_threshold=args.movement_threshold,
+        video_padding=args.video_padding,
         video_path=args.video if hasattr(args, "video") and args.video else None,
         record_range=tuple(args.record_range) if args.record_range else None,
     )
+    print(f"\n{len(pour_events)} pour event(s) detected.")
 
 
 if __name__ == "__main__":
