@@ -1,0 +1,59 @@
+# ── Beer Tap Counting Pipeline Configuration ─────────────────────────────────
+#
+# Usage:
+#   python notebooks/pipeline.py --config config/pipeline.yaml
+#   python notebooks/pipeline.py --config config/pipeline.yaml --interactive
+#   python notebooks/pipeline.py --config config/pipeline.yaml --stage yolo_tracking
+#
+
+# ── Video & Output ────────────────────────────────────────────────────────────
+video_path: data/videos/cerveza4.mp4
+output_dir: results/pipeline_cerveza4
+
+# ── Stage Control ─────────────────────────────────────────────────────────────
+# Set false to skip a stage. Existing outputs are reused unless --force is set.
+stages:
+  roi_selection: true
+  yolo_tracking: true
+  relink: true
+  sam3_tap_tracking: true
+
+# ── ROI & Divider (Stage 1+2) ────────────────────────────────────────────────
+# Normalised 0-1 coordinates. Set to null to trigger interactive selection.
+# Set roi_json to reuse a tap_roi.json from another run (skips interactive).
+# tap_divider is optional — tap assignment is done by SAM centroid Y.
+roi:
+  roi_json: results/pipeline_cerveza2/tap_roi.json  # Reuse tap_roi from cerveza2
+  tap_roi: null            # [x1, y1, x2, y2] or null
+  tap_divider: null        # [x1, y1, x2, y2] or null (optional, not used by YOLO/relink)
+
+# ── YOLO Tracking (Stage 3a) ─────────────────────────────────────────────────
+yolo:
+  model: yolov8x-worldv2.pt
+  classes: [cup, person]
+  sample_every: 1          # process every Nth frame (1 = all)
+  conf_threshold: 0.25
+  tracker: config/botsort.yaml
+  preview_second: 60.0
+  record_range: null       # [start_s, stop_s] or null (manual override)
+
+# ── Relink (Stage 3b) ────────────────────────────────────────────────────────
+relink:
+  overlap_threshold: 15    # frames of co-existence -> incompatible
+  min_track_dets: 2        # ignore tracks with fewer detections
+  max_interp_gap: 10       # interpolate gaps <= this many frames
+  min_pour_frames: 30      # minimum frames after relinking to count as pour
+  movement_threshold: 5.0  # min spatial spread (px) to count as pour
+  video_padding: 2.0       # seconds of padding around pour events in auto-video
+  record_range: null       # [start_s, stop_s] or null (manual override)
+
+# ── SAM3 Tap Handle Tracking (Stage 4) ───────────────────────────────────────
+sam3:
+  model: sam3.pt
+  object_labels: [TAP_A, TAP_B]
+  colors: [[0, 255, 0], [0, 128, 255]]  # BGR per object
+  tap_bboxes: [[115.59275980426388, 155.01650382179628, 294.96956260172215, 215.51637222093893], [442.5043293996316, 78.59561742287917, 481.7761737990751, 270.70923462015685]]
+  max_frames: null         # null = all frames
+  frame_skip: 5            # process every Nth frame
+  save_snapshot_every: 50  # save PNG snapshots
+  half: true               # half precision for speed

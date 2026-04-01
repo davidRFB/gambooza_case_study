@@ -2,7 +2,7 @@
 Unified beer tap counting pipeline.
 
 Orchestrates four stages:
-  1. ROI selection — crop area + SAM3 tap bboxes (divider optional)
+  1. ROI selection — crop region + TAP_A / TAP_B bboxes (no divider line)
   2. YOLO tracking — detect and track cups with YOLO-World + BoT-SORT
   3. Relink — merge fragmented tracks + classify pours (movement + frame count)
   4. SAM3 tap tracking — segment tap handles, determine which tap via centroid Y
@@ -23,6 +23,7 @@ python notebooks/pipeline.py --config config/pipeline.yaml --force
 """
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -35,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cv2
 
 from common import (
-    resolve_roi, resolve_divider, save_roi_config, load_roi_config,
+    resolve_roi, load_roi_config,
     crop_normalized, select_tap_bboxes_interactive,
 )
 
@@ -64,12 +65,13 @@ def load_config(config_path: Path) -> dict:
 # ── Stage 1+2: ROI Selection ─────────────────────────────────────────────────
 
 def stage_roi_selection(cfg: dict, interactive: bool = False, force: bool = False):
-    """Resolve ROI, tap divider, and SAM3 tap bboxes. Saves to tap_roi.json.
+    """Resolve crop ROI and SAM3 tap bboxes. Saves to tap_roi.json.
 
-    When *interactive* is True the user gets three windows in sequence:
-      1. Drag-rectangle for the overall TAP area
-      2. Two-click divider line (shown for verification)
-      3. One drag-rectangle per SAM3 tap label (TAP_A, TAP_B)
+    When *interactive* is True the user gets one window per step:
+      1. Drag-rectangle for the crop region (full-frame normalised coords)
+      2. One drag-rectangle per label on the cropped frame (TAP_A, TAP_B)
+
+    No A|B divider line — tap side comes from SAM centroid Y.
     """
     import json
     import shutil
@@ -82,7 +84,6 @@ def stage_roi_selection(cfg: dict, interactive: bool = False, force: bool = Fals
     sam3_cfg = cfg.get("sam3", {})
 
     config_roi = roi_cfg.get("tap_roi")
-    config_divider = roi_cfg.get("tap_divider")
 
     # If roi_json points to an external file, load from there
     external_roi = roi_cfg.get("roi_json")
@@ -122,14 +123,15 @@ def stage_roi_selection(cfg: dict, interactive: bool = False, force: bool = Fals
         print(f"ERROR: Could not read {video_path}")
         sys.exit(1)
 
-    # -- Window 1: TAP area ROI ---------------------------------------------
+    # -- Window 1: crop region (full frame, normalised) ---------------------
     tap_roi = resolve_roi(config_roi, roi_json, frame_0, interactive=interactive)
 
-    # -- Window 2: A|B divider line -----------------------------------------
-    tap_divider = resolve_divider(config_divider, roi_json, tap_roi, frame_0,
-                                  interactive=interactive)
+    # Optional divider from YAML only (not interactive; unused by YOLO/relink)
+    tap_divider = None
+    if roi_cfg.get("tap_divider") is not None:
+        tap_divider = tuple(roi_cfg["tap_divider"])
 
-    # -- Window 3: SAM3 tap bboxes (one drag-rectangle per label) -----------
+    # -- Window 2+: TAP_A / TAP_B bboxes on cropped frame ------------------
     object_labels = sam3_cfg.get("object_labels", ["TAP_A", "TAP_B"])
     tap_bboxes = sam3_cfg.get("tap_bboxes")
 
@@ -139,13 +141,13 @@ def stage_roi_selection(cfg: dict, interactive: bool = False, force: bool = Fals
             tap_bboxes = existing["sam3_tap_bboxes"]
             print(f"SAM3 tap bboxes loaded from {roi_json}")
         else:
-            print("Opening SAM3 tap bbox selectors on cropped frame ...")
+            print("Opening TAP_A / TAP_B bbox selectors on cropped frame ...")
             crop = crop_normalized(frame_0, tap_roi)
             tap_bboxes = select_tap_bboxes_interactive(crop, object_labels)
 
     # -- Persist everything -------------------------------------------------
     save_data = {"tap_roi": list(tap_roi)}
-    if tap_divider:
+    if tap_divider is not None:
         save_data["tap_divider"] = list(tap_divider)
     if tap_bboxes:
         save_data["sam3_tap_bboxes"] = tap_bboxes
@@ -326,6 +328,63 @@ def _get_roi(cfg: dict) -> tuple[tuple, tuple | None]:
     return tap_roi, tap_divider
 
 
+# ── Tap Assignment ────────────────────────────────────────────────────────────
+
+def _assign_pours_to_taps(pour_json: Path, centroids_csv: Path) -> list[dict] | None:
+    """Assign each pour event to TAP_A or TAP_B based on SAM3 centroid movement.
+
+    During a pour, the corresponding tap handle moves (centroid Y changes).
+    For each pour's frame range, we compute the centroid-Y standard deviation
+    for each tap — the tap with more movement is the one that poured.
+    """
+    import numpy as np
+    import pandas as pd
+
+    if not pour_json.exists() or not centroids_csv.exists():
+        return None
+
+    pours = json.loads(pour_json.read_text())
+    if not pours:
+        return []
+
+    df = pd.read_csv(centroids_csv)
+    if df.empty:
+        return [{**p, "tap": "UNKNOWN", "tap_movement": {}} for p in pours]
+
+    labels = sorted(df["label"].unique())
+    assigned = []
+
+    for p in pours:
+        f_start, f_end = p["frame_start"], p["frame_end"]
+        window = df[(df["frame"] >= f_start) & (df["frame"] <= f_end)]
+
+        movements = {}
+        for label in labels:
+            sub = window[window["label"] == label]
+            if len(sub) >= 2:
+                movements[label] = round(float(np.std(sub["centroid_y"])), 2)
+            else:
+                movements[label] = 0.0
+
+        if movements:
+            best_tap = max(movements, key=movements.get)
+            # Only assign if there's meaningful movement difference
+            if movements[best_tap] > 0:
+                tap = best_tap
+            else:
+                tap = "UNKNOWN"
+        else:
+            tap = "UNKNOWN"
+
+        assigned.append({
+            **p,
+            "tap": tap,
+            "tap_movement": movements,
+        })
+
+    return assigned
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 STAGE_FUNCS = {
@@ -418,6 +477,67 @@ def main():
     print(f"    {'─' * 35}")
     print(f"    {'TOTAL':25s} {total_elapsed:8.1f}s")
     print()
+
+    # ── Assign pours to taps & build final summary ────────────────────────
+    output_dir = Path(cfg["output_dir"])
+    output_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = output_dir / "summary.json"
+
+    merged: dict = {}
+    if summary_path.exists():
+        try:
+            merged = json.loads(summary_path.read_text())
+        except json.JSONDecodeError:
+            merged = {}
+
+    # Pipeline execution metadata
+    merged["pipeline_execution"] = {
+        "video_path": str(video_path),
+        "video_fps": float(video_fps) if video_fps else 0.0,
+        "video_total_frames": video_total_frames,
+        "video_duration_s": round(video_duration, 3),
+        "stage_seconds": {k: round(v, 3) for k, v in stage_times.items()},
+        "total_elapsed_s": round(total_elapsed, 3),
+        "single_stage": args.stage,
+    }
+
+    # Tap assignment: correlate pour events with SAM3 centroid movement
+    pour_json = output_dir / "pour_events.json"
+    centroids_csv = output_dir / "sam3_centroids.csv"
+    assigned_pours = _assign_pours_to_taps(pour_json, centroids_csv)
+
+    if assigned_pours is not None:
+        tap_a = sum(1 for p in assigned_pours if p["tap"] == "TAP_A")
+        tap_b = sum(1 for p in assigned_pours if p["tap"] == "TAP_B")
+        unknown = sum(1 for p in assigned_pours if p["tap"] == "UNKNOWN")
+        total_beers = tap_a + tap_b + unknown
+
+        merged["results"] = {
+            "tap_a_beers": tap_a,
+            "tap_b_beers": tap_b,
+            "unknown_tap": unknown,
+            "total_beers": total_beers,
+            "pour_events": assigned_pours,
+        }
+
+        # Save enriched pour events back
+        enriched_path = output_dir / "pour_events_assigned.json"
+        enriched_path.write_text(json.dumps(assigned_pours, indent=2))
+
+        print(f"\n{'=' * 60}")
+        print(f"  FINAL RESULTS")
+        print(f"{'=' * 60}")
+        print(f"    TAP A:   {tap_a} beer(s)")
+        print(f"    TAP B:   {tap_b} beer(s)")
+        if unknown:
+            print(f"    UNKNOWN: {unknown} (no SAM3 data for that range)")
+        print(f"    TOTAL:   {total_beers} beer(s)")
+        print(f"{'=' * 60}")
+    else:
+        print("\n  (No pour events or SAM3 data — skipping tap assignment)")
+
+    summary_path.write_text(json.dumps(merged, indent=2))
+    print(f"\n  Summary saved to {summary_path}")
 
 
 if __name__ == "__main__":

@@ -36,7 +36,7 @@ def select_roi_interactive(frame: np.ndarray) -> tuple:
 
     fig, ax = plt.subplots(figsize=(14, 8))
     ax.imshow(rgb)
-    ax.set_title("Drag a rectangle over the TAP area, then close the window.")
+    ax.set_title("Drag a rectangle over the crop region, then close the window.")
     ax.axis("off")
     plt.tight_layout()
 

@@ -314,141 +314,167 @@ When user clicks "Process":
 
 ---
 
-## 6. ML Pipeline — Shared Interface
+## 6. ML Pipeline — Implemented Architecture
 
-Both approaches implement the same abstract interface so the backend can swap them via config.
+The ML pipeline is a 4-stage system orchestrated by `notebooks/pipeline.py`, driven by a YAML config file (e.g. `config/pipeline.yaml`). Each stage produces output files that the next stage consumes. Stages are skippable and idempotent — existing outputs are reused unless `--force` is set.
 
-### Base Detector Interface
-
-```python
-class BaseDetector(ABC):
-    @abstractmethod
-    def count(self, video_path: str) -> List[TapEvent]:
-        """
-        Analyze video and return list of detected tap events.
-        Each TapEvent has: tap ('A'|'B'), frame_start, frame_end,
-        timestamp_start, timestamp_end, confidence (optional).
-        """
-        pass
-```
-
-### Shared Preprocessing Steps (both approaches use these)
-
-1. **Open video** with OpenCV `cv2.VideoCapture`.
-2. **Extract metadata:** FPS, total frames, duration.
-3. **Frame sampling:** Process every Nth frame (e.g., every 3rd for 30fps video → 10 effective fps). This saves compute without losing events that last multiple seconds.
-4. **ROI definition:** Both approaches need to know where Tap A and Tap B are in the frame. Store as normalized coordinates (0-1 range) so they work across resolutions.
-
-### ROI Calibration (one-time manual step)
-
-Use `notebooks/02_roi_calibration.ipynb`:
-1. Load first frame of a reference video.
-2. Draw rectangles around Tap A zone and Tap B zone.
-3. Save normalized coordinates to a config file.
-4. These ROIs define "where to look" for both approaches.
-
-The ROI should cover the area under each tap where the pour action occurs (tap handle + glass zone beneath it).
-
----
-
-
-## 8. ML Approach B — Advanced: YOLO + Tracking + SAM
-
-**Best for:** Higher accuracy, handles more visual variation, provides bounding boxes for UI.
-
-### Core Idea
-
-Use YOLOv8 (Ultralytics) to detect objects relevant to a pour event (glasses, hands, tap handles) in each frame. Then use tracking and spatial rules to determine when a pour starts and ends at each tap.
-
-### Object Detection Setup
-
-#### Option B1: Zero-Shot with Pretrained YOLO
-
-Use `yolov8n.pt` (nano, fast) or `yolov8s.pt` (small, more accurate). COCO-pretrained YOLO detects `cup`, `bottle`, `person`. It does NOT detect tap handles or beer flow directly. here we used indead YOLO WORLD models to detec the cups and the person. only. In this way we avoid noise
-
-Strategy:
-- Detect `cup` class within each tap's ROI.
-- A pour event = a `cup` object appears in the ROI, stays for several seconds, then leaves.
-- Combine with motion detection from Approach A for the "flow" signal.
-
-
-### Tracking Logic
+### Pipeline Stages
 
 ```
-For each sampled frame:
-    1. Run YOLO inference → list of detections (class, bbox, confidence)
-    2. Filter detections inside ROI_A and ROI_B
-    3. For each ROI, track the "cup" object across frames:
-        - Use simple IoU-based tracker (no need for DeepSORT)
-        - Or use Ultralytics built-in tracker: model.track()
-
-State machine per ROI:
-    States: IDLE → CUP_DETECTED → POURING → COMPLETE
-
-    IDLE:
-        - If cup detected in ROI for > N consecutive frames → CUP_DETECTED
-
-    CUP_DETECTED:
-        - If motion activity in ROI increases (reuse Approach A's signal) → POURING
-        - If cup leaves ROI → back to IDLE (false alarm)
-
-    POURING:
-        - If motion activity drops AND cup still present → COMPLETE
-        - If cup leaves → COMPLETE
-
-    COMPLETE:
-        - Record event (tap, frame_start, frame_end, timestamps)
-        - Emit confidence = average YOLO confidence across tracked frames
-        - Transition to IDLE after cooldown period
+Stage 1: ROI Selection      → tap_roi.json (crop region + SAM3 tap bboxes)
+Stage 2: YOLO Tracking      → raw_detections.csv (per-frame cup/person tracks)
+Stage 3: Relink              → relinked_detections.csv + pour_events.json
+Stage 4: SAM3 Tap Tracking   → sam3_centroids.csv (tap handle centroid trajectories)
+Final:   Tap Assignment      → pour_events_assigned.json + summary.json
 ```
 
+### Stage 1: ROI Selection
 
-### Hybrid Strategy (Recommended)
+Interactive or config-driven. User selects:
+1. **Crop region** — normalized (0–1) bounding box on the full frame
+2. **TAP_A / TAP_B bboxes** — pixel-space bounding boxes on the cropped frame (used to initialize SAM3)
 
-The strongest approach for this case combines both:
-- **YOLO** confirms a glass is present at the tap (reduces false positives from hand movement).
-- **Frame differencing** from Approach A confirms liquid is flowing (reduces false positives from stationary glasses).
-- **Both signals must agree** for an event to be counted.
+No A|B divider line — tap side is determined later by SAM3 centroid Y movement.
+Saved to `tap_roi.json` in the output directory.
 
-This hybrid catches cases that either approach alone would miss or miscount.
+### Stage 2: YOLO Tracking
 
-### Pros and Cons
+Uses **YOLO-World** (`yolov8x-worldv2.pt`) for zero-shot open-vocabulary detection of `cup` and `person` classes on the cropped video. Tracking via **BoT-SORT** (`config/botsort.yaml`) assigns persistent IDs across frames.
 
-| Pros | Cons |
-|------|------|
-| Object-level understanding | Requires GPU for reasonable speed |
-| Provides bounding boxes (useful for debugging UI) | Pretrained YOLO may not detect beer-specific objects well |
-| Confidence scores per detection | More complex pipeline and more parameters to tune |
-| Fine-tuning option for high accuracy | Fine-tuning requires manual labeling effort |
+Key parameters (from config):
+- `sample_every: 1` — process every frame (configurable)
+- `conf_threshold: 0.25`
+- `record_range` — optional time window `[start_s, stop_s]`
+
+Output: `raw_detections.csv` with per-frame bounding boxes and track IDs.
+
+### Stage 3: Relink
+
+Post-processes YOLO tracks to fix fragmentation and classify pour events:
+1. **Merge fragmented tracks** — tracks with overlapping time/space are relinked into single continuous tracks
+2. **Classify pours** — a track is a "pour" if it has enough frames (`min_pour_frames: 30`) and enough spatial movement (`movement_threshold: 5.0 px`)
+
+Key parameters:
+- `overlap_threshold: 15` frames of co-existence → incompatible tracks
+- `min_track_dets: 2` — ignore tiny tracks
+- `max_interp_gap: 10` — interpolate gaps up to this many frames
+
+Output: `relinked_detections.csv`, `pour_events.json`, `pour_frame_ranges.json`.
+
+### Stage 4: SAM3 Tap Handle Tracking
+
+Uses **SAM3VideoPredictor** (Segment Anything Model 3) to track tap handles across the video via mask propagation with a memory bank. Initialized with bounding boxes from Stage 1.
+
+- Tracks TAP_A and TAP_B handle positions (centroid X/Y per frame)
+- Only processes pour-event frame ranges (from Stage 3) for efficiency
+- `frame_skip: 5`, `half: true` for speed
+
+Output: `sam3_centroids.csv` with per-frame centroid coordinates for each tap label.
+
+### Tap Assignment (Final)
+
+Correlates pour events with SAM3 centroid data:
+- For each pour's frame range, compute **centroid-Y standard deviation** for each tap
+- The tap with **more Y movement** during the pour is the one that poured
+- If no meaningful movement difference → `UNKNOWN`
+
+Output: `pour_events_assigned.json` (enriched pour events with `tap` field) and `summary.json` with final counts.
+
+### Pipeline Config (`config/pipeline.yaml`)
+
+```yaml
+video_path: data/videos/cerveza2.mp4
+output_dir: results/pipeline_cerveza2
+
+stages:
+  roi_selection: true
+  yolo_tracking: true
+  relink: true
+  sam3_tap_tracking: true
+
+roi:
+  roi_json: null       # reuse from another run, or null for interactive
+  tap_roi: null        # [x1, y1, x2, y2] normalized, or null
+  tap_divider: null    # optional, not used by YOLO/relink
+
+yolo:
+  model: yolov8x-worldv2.pt
+  classes: [cup, person]
+  sample_every: 1
+  conf_threshold: 0.25
+  tracker: config/botsort.yaml
+
+relink:
+  overlap_threshold: 15
+  min_pour_frames: 30
+  movement_threshold: 5.0
+
+sam3:
+  model: sam3.pt
+  object_labels: [TAP_A, TAP_B]
+  tap_bboxes: null     # pixel-space on cropped frame, or null for interactive
+  frame_skip: 5
+  half: true
+```
+
+### Running the Pipeline
+
+```bash
+# Full pipeline (interactive ROI + bbox selection on first run):
+python notebooks/pipeline.py --config config/pipeline.yaml --interactive
+
+# Re-run with saved coordinates:
+python notebooks/pipeline.py --config config/pipeline.yaml
+
+# Run a single stage:
+python notebooks/pipeline.py --config config/pipeline.yaml --stage relink
+
+# Force re-run even if outputs exist:
+python notebooks/pipeline.py --config config/pipeline.yaml --force
+```
+
+### Key Implementation Files
+
+| File | Purpose |
+|------|---------|
+| `notebooks/pipeline.py` | Main orchestrator — loads config, runs stages, assigns taps |
+| `notebooks/common.py` | Shared utilities — ROI selection, cropping, matplotlib-based interactive selectors |
+| `notebooks/03_YOLO_track.py` | YOLO-World + BoT-SORT tracking logic |
+| `notebooks/05_relink_coexistence.py` | Track relinking + pour event classification |
+| `notebooks/sam3_tracking.py` | SAM3 video propagation for tap handle tracking |
+| `config/pipeline.yaml` | Default pipeline config |
+| `config/botsort.yaml` | BoT-SORT tracker config |
 
 ---
 
 ## 9. Development Workflow
 
+### Phase 1: ML Pipeline (DONE)
 
-### Phase 1: Simple ML (Day 1-2, ~4-6 hours)
+Notebook-based exploration → unified 4-stage pipeline:
+1. Explored videos, calibrated ROIs interactively.
+2. Built YOLO-World + BoT-SORT tracking (`03_YOLO_track.py`).
+3. Built track relinking + pour classification (`05_relink_coexistence.py`).
+4. Built SAM3 tap handle tracking (`sam3_tracking.py`).
+5. Unified into `pipeline.py` with YAML config.
+6. Validated across multiple videos (pipeline1–7 configs).
+7. **Result:** Pipeline produces `summary.json` with TAP_A / TAP_B / UNKNOWN counts.
 
-1. Open provided videos in a notebook, inspect frames, mark ROIs.
-2. Implement Approach A (frame differencing) in the notebook first.
-3. Tune thresholds against the provided videos.
-4. Wrap the logic into `SimpleDetector` class implementing `BaseDetector`.
-5. Integrate into the backend processor service.
-6. **Goal:** Upload video → real ML processing → correct counts displayed.
-
-### Phase 3: Skeleton (Day 1, ~4-6 hours)
+### Phase 2: Application Skeleton (NEXT)
 
 1. Set up the project structure as defined in Section 1.
 2. Create Dockerfiles and docker-compose.yml.
 3. Implement database models and connection.
-4. Build FastAPI upload + status endpoints (without real ML, just set status='completed' with dummy counts).
+4. Build FastAPI endpoints — integrate the existing ML pipeline as the backend processor.
 5. Build Streamlit UI that talks to the backend.
-6. **Goal:** End-to-end flow works: upload → dummy process → display counts.
-### Phase 4: Polish (Day 3, ~3-4 hours)
+6. **Goal:** End-to-end flow works: upload → pipeline processing → display counts.
+
+### Phase 3: Polish
 
 1. Test with all provided videos, fix edge cases.
 2. Add error handling and input validation.
 3. Write README with setup instructions.
-4. Clean up code, add type hints and docstrings.
+4. Clean up code.
 5. Test the Docker build from scratch to ensure it works cleanly.
 6. **Goal:** Demo-ready. `docker-compose up` → open browser → upload new video → correct results.
 
