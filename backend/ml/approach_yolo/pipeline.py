@@ -22,14 +22,13 @@ python scripts/run_yolo_pipeline.py --config config/pipeline.yaml --stage relink
 python scripts/run_yolo_pipeline.py --config config/pipeline.yaml --force
 """
 
-import argparse
 import json
+import shutil
+import argparse
 import sys
 import time
 from pathlib import Path
-
 import yaml
-
 import cv2
 
 from backend.ml.common import (
@@ -70,8 +69,6 @@ def stage_roi_selection(cfg: dict, interactive: bool = False, force: bool = Fals
 
     No A|B divider line — tap side comes from SAM centroid Y.
     """
-    import json
-    import shutil
 
     video_path = Path(cfg["video_path"])
     output_dir = Path(cfg["output_dir"])

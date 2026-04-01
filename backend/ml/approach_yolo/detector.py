@@ -10,7 +10,8 @@ Stages: ROI selection → YOLO tracking → Relink → SAM3 tap tracking → Tap
 import json
 from dataclasses import dataclass, asdict
 from pathlib import Path
-
+import time
+import cv2
 from backend.ml.approach_yolo.pipeline import (
     load_config, STAGE_FUNCS, STAGES, _assign_pours_to_taps,
 )
@@ -50,8 +51,6 @@ class YOLODetector:
         force : re-run stages even if outputs exist
         stage : run only this stage (None = all)
         """
-        import time
-        import cv2
 
         cfg = load_config(self.config_path)
 

@@ -12,3 +12,4 @@ aiofiles
 python-multipart
 pyyaml
 pytest
+streamlit
