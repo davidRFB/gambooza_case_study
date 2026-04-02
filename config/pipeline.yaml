@@ -45,7 +45,7 @@ relink:
   max_interp_gap: 10       # interpolate gaps <= this many frames
   min_pour_frames: 30      # minimum frames after relinking to count as pour
   movement_threshold: 5.0  # min spatial spread (px) to count as pour
-  stationary_ratio: 0.8    # if cup stays near median pos for this fraction → skip
+  stationary_ratio: 0.85   # if cup stays near median pos for this fraction → skip
   stationary_px: 10.0      # px radius to consider "same spot"
   video_padding: 2.0       # seconds of padding around pour events in auto-video
   record_range: null       # [start_s, stop_s] or null (manual override)

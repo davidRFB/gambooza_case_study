@@ -62,7 +62,7 @@ MIN_TRACK_DETS = 2  # ignore single-detection noise
 MAX_INTERP_GAP = 10  # interpolate gaps ≤ 0.5 s
 MIN_POUR_FRAMES = 30  # minimum frames after relinking to count as pour
 MOVEMENT_THRESHOLD = 5.0  # minimum spatial spread (px) to count as pour
-STATIONARY_RATIO = 0.8  # if cup is stationary (within stationary_px) for this
+STATIONARY_RATIO = 0.85  # if cup is stationary (within stationary_px) for this
 # fraction of its lifespan, it's not a pour
 STATIONARY_PX = 10.0  # px radius to consider "same spot"
 VIDEO_PADDING = 2.0  # seconds of padding around pour events in auto-video
