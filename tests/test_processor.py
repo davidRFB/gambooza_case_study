@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from backend.config import RESULTS_DIR, ROI_CONFIGS_DIR
+from backend.config import ROI_CONFIGS_DIR
 from backend.services.processor import (
     _load_roi_config,
     _map_pour_events,
@@ -52,7 +52,7 @@ def test_load_roi_missing_yolo_section():
         path.unlink()
 
 
-def test_run_yolo_pipeline_builds_correct_config():
+def test_run_yolo_pipeline_builds_correct_config(tmp_path):
     """Verify the temp config has the right overrides (mock the actual detector)."""
     roi = {
         "yolo": {
@@ -75,16 +75,20 @@ def test_run_yolo_pipeline_builds_correct_config():
         mock_instance.run.return_value = fake_result
         return mock_instance
 
-    with patch(
-        "backend.services.processor._import_yolo_detector",
-        return_value=capture_detector,
+    test_results = tmp_path / "results"
+    with (
+        patch("backend.services.processor.RESULTS_DIR", test_results),
+        patch(
+            "backend.services.processor._import_yolo_detector",
+            return_value=capture_detector,
+        ),
     ):
         events = _run_yolo_pipeline(Path("/tmp/fake.mp4"), 99, roi)
 
     # Check the config was built correctly
     cfg = captured_config_path["content"]
     assert cfg["video_path"] == "/tmp/fake.mp4"
-    assert cfg["output_dir"] == str(RESULTS_DIR / "web_99")
+    assert cfg["output_dir"] == str(test_results / "web_99")
     assert cfg["roi"]["tap_roi"] == roi["yolo"]["tap_roi"]
     assert cfg["sam3"]["tap_bboxes"] == roi["yolo"]["sam3_tap_bboxes"]
 
@@ -236,7 +240,7 @@ def test_load_roi_config_without_simple_section():
         path.unlink()
 
 
-def test_run_yolo_pipeline_with_output_subdir():
+def test_run_yolo_pipeline_with_output_subdir(tmp_path):
     """Verify output_subdir places output in a subdirectory."""
     roi = {
         "yolo": {
@@ -258,11 +262,15 @@ def test_run_yolo_pipeline_with_output_subdir():
         mock_instance.run.return_value = fake_result
         return mock_instance
 
-    with patch(
-        "backend.services.processor._import_yolo_detector",
-        return_value=capture_detector,
+    test_results = tmp_path / "results"
+    with (
+        patch("backend.services.processor.RESULTS_DIR", test_results),
+        patch(
+            "backend.services.processor._import_yolo_detector",
+            return_value=capture_detector,
+        ),
     ):
         _run_yolo_pipeline(Path("/tmp/fake.mp4"), 99, roi, output_subdir="yolo_clips/clip_000")
 
     cfg = captured_config_path["content"]
-    assert cfg["output_dir"] == str(RESULTS_DIR / "web_99" / "yolo_clips" / "clip_000")
+    assert cfg["output_dir"] == str(test_results / "web_99" / "yolo_clips" / "clip_000")

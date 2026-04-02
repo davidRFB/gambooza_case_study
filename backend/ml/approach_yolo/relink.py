@@ -154,7 +154,10 @@ def build_track_info(cups: pd.DataFrame, min_dets: int) -> dict:
         if len(grp) < min_dets:
             continue
         tid = int(tid)
-        areas = (grp["x2"] - grp["x1"]) * (grp["y2"] - grp["y1"])
+        widths = grp["x2"] - grp["x1"]
+        heights = grp["y2"] - grp["y1"]
+        areas = widths * heights
+        aspects = heights / widths.clip(lower=1)  # height/width ratio
         info[tid] = {
             "first_frame": int(grp["frame"].iloc[0]),
             "last_frame": int(grp["frame"].iloc[-1]),
@@ -162,6 +165,7 @@ def build_track_info(cups: pd.DataFrame, min_dets: int) -> dict:
             "median_cx": float(grp["cx"].median()),
             "median_cy": float(grp["cy"].median()),
             "median_area": float(areas.median()),
+            "median_aspect": float(aspects.median()),
             "n_dets": len(grp),
         }
     return info

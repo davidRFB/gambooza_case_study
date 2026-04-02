@@ -1,0 +1,30 @@
+# Data (bind-mounted at runtime, never copied into image)
+data/
+results/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv*/
+*.egg-info/
+
+# Dev / IDE
+.git/
+.ruff_cache/
+.pytest_cache/
+notebooks/
+tests/
+scripts/
+
+# Large files
+*.mp4
+*.avi
+*.mov
+*.pt
+
+# Misc
+*.log
+notes.txt
+error.log
+problem.txt
+CLAUDE.md

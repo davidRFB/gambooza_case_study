@@ -99,7 +99,14 @@ class YOLODetector:
         output_dir = Path(cfg["output_dir"])
         pour_json = output_dir / "pour_events.json"
         centroids_csv = output_dir / "sam3_centroids.csv"
-        assigned_pours = _assign_pours_to_taps(pour_json, centroids_csv)
+
+        # If relink found 0 pours, SAM3 was skipped — no assignment needed
+        internal_pours = cfg.get("_pour_events")
+        if internal_pours is not None and len(internal_pours) == 0:
+            logger.info("No pour events — skipping tap assignment")
+            assigned_pours = []
+        else:
+            assigned_pours = _assign_pours_to_taps(pour_json, centroids_csv)
 
         if assigned_pours is not None:
             assigned_path = output_dir / "pour_events_assigned.json"

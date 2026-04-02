@@ -252,10 +252,17 @@ def stage_sam3_tap_tracking(cfg: dict, interactive: bool = False, force: bool = 
 
     Uses pour frame ranges from the relink stage (if available) so the SAM
     output video only covers the movement periods, matching the YOLO video.
+    Skips entirely when relink found zero pour events.
     """
     import json as _json
 
     from backend.ml.approach_yolo.sam3_tracking import run_sam3_video_tracking
+
+    # Skip SAM3 if relink found no pour events — nothing to assign to taps
+    pour_events = cfg.get("_pour_events", None)
+    if pour_events is not None and len(pour_events) == 0:
+        logger.info("No pour events from relink — skipping SAM3 stage")
+        return
 
     video_path = Path(cfg["video_path"])
     output_dir = Path(cfg["output_dir"])

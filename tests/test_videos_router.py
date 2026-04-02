@@ -1,6 +1,7 @@
 """Tests for the videos router."""
 
 import io
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,8 +15,8 @@ from backend.main import app
 
 
 @pytest.fixture
-def client():
-    """Test client with a fresh in-memory DB."""
+def client(tmp_path):
+    """Test client with a fresh in-memory DB and isolated results dir."""
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -32,8 +33,9 @@ def client():
             db.close()
 
     app.dependency_overrides[get_db] = override
-    with TestClient(app) as c:
-        yield c
+    with patch("backend.routers.videos.RESULTS_DIR", tmp_path / "results"):
+        with TestClient(app) as c:
+            yield c
     app.dependency_overrides.clear()
 
 
@@ -179,9 +181,6 @@ def test_restaurants_list(client):
 
 
 def test_save_roi_config(client, tmp_path):
-    from unittest.mock import patch
-
-    # Patch at the config module level (where it's imported from)
     with patch("backend.config.ROI_CONFIGS_DIR", tmp_path):
         resp = client.post(
             "/api/videos/roi-config",
@@ -227,8 +226,6 @@ def test_save_roi_config_missing_yolo(client):
 
 def test_save_roi_config_with_simple_section(client, tmp_path):
     """ROI config with both 'simple' and 'yolo' sections saves correctly."""
-    from unittest.mock import patch
-
     with patch("backend.routers.videos.ROI_CONFIGS_DIR", tmp_path):
         resp = client.post(
             "/api/videos/roi-config",

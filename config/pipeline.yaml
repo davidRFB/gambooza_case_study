@@ -35,6 +35,7 @@ yolo:
   conf_threshold: 0.25
   tracker: config/botsort.yaml
   preview_second: 60.0
+  save_video: true         # save yolo_raw_tracking.mp4 (pre-relink annotated video)
   record_range: null       # [start_s, stop_s] or null (manual override)
 
 # ── Relink (Stage 3b) ────────────────────────────────────────────────────────
