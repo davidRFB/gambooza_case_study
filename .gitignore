@@ -7,6 +7,8 @@ problem.txt
 *.mp4
 *.png
 data/explore_output/
+data/db_files/
+results/
 *.ts
 data/explore_tabs_output/
 *.jpg
