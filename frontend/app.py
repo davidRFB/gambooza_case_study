@@ -210,7 +210,7 @@ with tab_upload:
         else:
             st.warning("ROI config data not available. Try re-uploading.")
 
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             if st.button("Confirm & Process", type="primary"):
                 for k in [
@@ -228,6 +228,20 @@ with tab_upload:
                     st.toast("Processing started")
                 st.rerun()
         with col2:
+            if st.button("Re-draw ROI", key="redraw_roi"):
+                # Enter ROI wizard — will overwrite the config on save
+                st.session_state.roi_selection_active = True
+                st.session_state.roi_restaurant = restaurant_name
+                st.session_state.roi_camera = camera_id
+                for k in [
+                    "roi_confirm_active",
+                    "roi_confirm_data",
+                    "roi_confirm_restaurant",
+                    "roi_confirm_camera",
+                ]:
+                    st.session_state.pop(k, None)
+                st.rerun()
+        with col3:
             if st.button("Cancel", key="cancel_confirm"):
                 for k in [
                     "roi_confirm_active",
