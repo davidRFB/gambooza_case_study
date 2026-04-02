@@ -139,34 +139,6 @@ st.markdown(
     [data-baseweb="select"] > div {
         border-color: #A8D4B9 !important;
     }
-    [data-baseweb="select"] > div,
-    [data-baseweb="select"] span,
-    [data-baseweb="select"] input {
-        color: #2E3D34 !important;
-    }
-
-    /* Text inputs, labels, captions, and other form elements */
-    input, textarea, label, .stTextInput input, .stTextArea textarea {
-        color: #2E3D34 !important;
-    }
-    .stCaption, [data-testid="stCaptionContainer"] {
-        color: #4A5D52 !important;
-    }
-    p, span, div, .stMarkdown, .stText {
-        color: #2E3D34;
-    }
-
-    /* File uploader text */
-    [data-testid="stFileUploader"] label,
-    [data-testid="stFileUploader"] span,
-    [data-testid="stFileUploader"] p {
-        color: #2E3D34 !important;
-    }
-
-    /* Checkbox labels */
-    .stCheckbox label span {
-        color: #2E3D34 !important;
-    }
 
     /* Success/warning/error messages */
     .stSuccess { border-left-color: #A8D4B9 !important; }
