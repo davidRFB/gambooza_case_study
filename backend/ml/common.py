@@ -38,8 +38,14 @@ def select_roi_interactive(frame: np.ndarray) -> tuple:
     h, w = frame.shape[:2]
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    fig, ax = plt.subplots(figsize=(14, 8))
-    ax.imshow(rgb)
+    # Scale figure: ensure at least 1400px wide on screen for usability
+    dpi = 100
+    min_fig_w = 14  # inches — minimum for comfortable ROI selection
+    max_fig_w = 20
+    fig_w = max(min(w / dpi, max_fig_w), min_fig_w)
+    fig_h = fig_w * (h / w)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=dpi)
+    ax.imshow(rgb, interpolation="lanczos")
     ax.set_title("Drag a rectangle over the crop region, then close the window.")
     ax.axis("off")
     plt.tight_layout()

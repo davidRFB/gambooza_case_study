@@ -229,14 +229,49 @@ _TRACK_COLORS = [
 ]
 
 
+def _detect_crop_width(output_dir: Path, video_path: Path | None = None) -> float | None:
+    """Detect the crop width in pixels from tap_roi.json + video resolution."""
+    roi_json = output_dir / "tap_roi.json"
+    if not roi_json.exists() or not video_path or not video_path.exists():
+        return None
+    try:
+        roi_cfg = json.loads(roi_json.read_text())
+        tap_roi = roi_cfg.get("tap_roi")
+        if not tap_roi:
+            return None
+        cap = cv2.VideoCapture(str(video_path))
+        vid_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        cap.release()
+        crop_w = (tap_roi[2] - tap_roi[0]) * vid_w
+        return crop_w
+    except Exception:
+        return None
+
+
+def _font_scale_for_width(frame_width: int) -> tuple[float, int, float, int]:
+    """Return (font_scale, thickness, timestamp_scale, timestamp_thickness) scaled to frame width.
+
+    Reference: 800px -> font_scale=0.45, thickness=1, timestamp=0.6, ts_thickness=2.
+    """
+    scale = max(frame_width / 800.0, 0.25)  # floor at 0.25 to stay readable
+    font_scale = 0.45 * scale
+    thickness = max(1, round(scale))
+    ts_scale = 0.6 * scale
+    ts_thickness = max(1, round(2 * scale))
+    return font_scale, thickness, ts_scale, ts_thickness
+
+
 def draw_detections(frame: np.ndarray, dets: pd.DataFrame, track_color_map: dict) -> np.ndarray:
     """Draw bounding boxes + labels for all detections on a frame."""
     out = frame.copy()
+    h, w = out.shape[:2]
+    box_thick_base = max(1, round(w / 400.0))
+
     for _, row in dets.iterrows():
         tid = int(row["track_id"])
         color = track_color_map.get(tid, (200, 200, 200))
         x1, y1, x2, y2 = int(row["x1"]), int(row["y1"]), int(row["x2"]), int(row["y2"])
-        thickness = 1 if row.get("interpolated", False) else 2
+        thickness = max(1, box_thick_base - 1) if row.get("interpolated", False) else box_thick_base
         cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness)
 
         cls = str(row["class"])
@@ -299,6 +334,7 @@ def render_annotated_video(
 
     video_writer = None
     rec_path = output_dir / filename
+    ts_font_scale = None  # computed on first frame
 
     for seg_start, seg_stop in frame_ranges:
         seg_stop = min(seg_stop, total_frames - 1)
@@ -313,14 +349,19 @@ def render_annotated_video(
             if fidx in frame_dets:
                 crop = draw_detections(crop, frame_dets[fidx], track_color_map)
 
+            # Scale timestamp font to crop width
+            if ts_font_scale is None:
+                _, _, ts_font_scale, ts_font_thick = _font_scale_for_width(crop.shape[1])
+                ts_margin_x = max(40, int(crop.shape[1] * 0.15))
+
             cv2.putText(
                 crop,
                 f"{fidx / fps:.1f}s",
-                (crop.shape[1] - 120, crop.shape[0] - 15),
+                (crop.shape[1] - ts_margin_x, crop.shape[0] - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
+                ts_font_scale,
                 (255, 255, 255),
-                2,
+                ts_font_thick,
             )
 
             if video_writer is None:
@@ -352,6 +393,7 @@ def run_relink(
     video_padding: float = VIDEO_PADDING,
     video_path: Path | None = None,
     record_range: tuple | None = None,
+    save_video: bool = False,
 ) -> tuple[Path, list[dict]]:
     """Run track relinking and pour classification.
 
@@ -492,12 +534,34 @@ def run_relink(
         if len(non_zero):
             fps_est = float((non_zero["frame"] / non_zero["time_s"]).median())
 
+    # Resolution-aware scaling: thresholds were calibrated on ~800px-wide crops.
+    # Scale pixel-based thresholds proportionally to actual crop width.
+    REFERENCE_CROP_WIDTH = 800.0
+    crop_width = _detect_crop_width(output_dir, video_path)
+    if crop_width and crop_width < REFERENCE_CROP_WIDTH * 0.9:
+        scale = crop_width / REFERENCE_CROP_WIDTH
+        movement_threshold_scaled = movement_threshold * scale
+        stationary_px_scaled = stationary_px * scale
+        logger.info(
+            "Resolution scaling: crop_width=%dpx (ref=%dpx, scale=%.2f) "
+            "movement_threshold: %.1f -> %.1f, stationary_px: %.1f -> %.1f",
+            crop_width,
+            REFERENCE_CROP_WIDTH,
+            scale,
+            movement_threshold,
+            movement_threshold_scaled,
+            stationary_px,
+            stationary_px_scaled,
+        )
+        movement_threshold = movement_threshold_scaled
+        stationary_px = stationary_px_scaled
+
     pour_events: list[dict] = []
     tids_after = sorted(relinked_cups["track_id"].unique())
 
     logger.info(
         "Pour classification (min_frames=%d, movement=%.1fpx, "
-        "stationary_ratio=%.0f%%, stationary_px=%.0fpx)",
+        "stationary_ratio=%.0f%%, stationary_px=%.1fpx)",
         min_pour_frames,
         movement_threshold,
         stationary_ratio * 100,
@@ -698,6 +762,15 @@ def run_relink(
             rec_start = int(record_range[0] * fps_vid)
             rec_stop = int(record_range[1] * fps_vid)
             render_annotated_video(video_path, output_dir, [(rec_start, rec_stop)], df)
+
+    # ── 12. Full relinked video (all frames, not just pours) ─────────────
+    if save_video and video_path and video_path.exists():
+        cap = cv2.VideoCapture(str(video_path))
+        total_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        full_range = [(0, total_video_frames - 1)]
+        logger.info("Rendering full relinked video (%d frames)", total_video_frames)
+        render_annotated_video(video_path, output_dir, full_range, df, filename="relinked_full.mp4")
 
     logger.info(
         "Relink complete: BEFORE=%d track IDs  AFTER=%d physical cups  POURS=%d",

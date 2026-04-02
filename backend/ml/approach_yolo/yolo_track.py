@@ -31,6 +31,7 @@ import argparse
 import json
 import logging
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -153,6 +154,7 @@ def run_yolo_tracking(
     tracker: str = "../config/botsort.yaml",
     preview_second: float = 60.0,
     record_range: tuple | None = None,
+    save_video: bool = False,
 ) -> Path:
     """Run YOLO tracking on a cropped video region and return path to raw_detections.csv.
 
@@ -211,6 +213,7 @@ def run_yolo_tracking(
         model = YOLO(model_name)
 
     # -- Full-video tracking ------------------------------------------------
+    tracking_t0 = time.time()
     logger.info("Tracking video every %d frame(s) with %s", sample_every, tracker)
     cap = cv2.VideoCapture(str(video_path))
     frame_idx = 0
@@ -232,6 +235,11 @@ def run_yolo_tracking(
             rec_start_frame,
             rec_stop_frame,
         )
+
+    # -- Full annotated video (raw YOLO, pre-relink) -----------------------
+    full_video_writer = None
+    if save_video:
+        logger.info("Will save full annotated YOLO video (pre-relink)")
 
     while True:
         ret, frame = cap.read()
@@ -266,7 +274,6 @@ def run_yolo_tracking(
             # Write annotated frame if within recording range
             if rec_start_frame is not None and rec_start_frame <= frame_idx <= rec_stop_frame:
                 annotated = results.plot()
-                # Timestamp overlay
                 cv2.putText(
                     annotated,
                     f"{frame_idx / fps:.1f}s",
@@ -287,6 +294,32 @@ def run_yolo_tracking(
                     logger.debug("Video writer opened: %s (%dx%d)", rec_path, w_out, h_out)
                 video_writer.write(annotated)
 
+            # Write full annotated video (pre-relink)
+            if save_video:
+                annotated_full = results.plot()
+                fw = annotated_full.shape[1]
+                ts_scale = max(0.3 * fw / 800.0, 0.15)
+                ts_thick = max(1, round(2 * fw / 800.0))
+                ts_margin = max(40, int(fw * 0.15))
+                cv2.putText(
+                    annotated_full,
+                    f"{frame_idx / fps:.1f}s",
+                    (fw - ts_margin, annotated_full.shape[0] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    ts_scale,
+                    (255, 255, 255),
+                    ts_thick,
+                )
+                if full_video_writer is None:
+                    h_out, w_out = annotated_full.shape[:2]
+                    full_path = output_dir / "yolo_raw_tracking.mp4"
+                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                    full_video_writer = cv2.VideoWriter(
+                        str(full_path), fourcc, fps / sample_every, (w_out, h_out)
+                    )
+                    logger.info("YOLO raw video writer opened: %s (%dx%d)", full_path, w_out, h_out)
+                full_video_writer.write(annotated_full)
+
             if frame_idx % (sample_every * 100) == 0:
                 logger.debug(
                     "Frame %d/%d  tracks so far: %d", frame_idx, total_frames, len(track_data)
@@ -298,7 +331,16 @@ def run_yolo_tracking(
     if video_writer is not None:
         video_writer.release()
         logger.info("Annotated video saved to %s", output_dir / "annotated_clip.mp4")
-    logger.info("Total detections: %d  Unique track IDs: %d", len(all_detections), len(track_data))
+    if full_video_writer is not None:
+        full_video_writer.release()
+        logger.info("YOLO raw tracking video saved to %s", output_dir / "yolo_raw_tracking.mp4")
+    tracking_elapsed = round(time.time() - tracking_t0, 3)
+    logger.info(
+        "Total detections: %d  Unique track IDs: %d  Elapsed: %.1fs",
+        len(all_detections),
+        len(track_data),
+        tracking_elapsed,
+    )
 
     # -- Save raw detections to CSV -----------------------------------------
     raw_csv = output_dir / "raw_detections.csv"
@@ -379,6 +421,7 @@ def run_yolo_tracking(
         "total_detections": len(all_detections),
         "unique_track_ids": len(track_data),
         "cup_tracks": len(cup_tracks),
+        "tracking_elapsed_s": tracking_elapsed,
     }
     summary_path = output_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2))

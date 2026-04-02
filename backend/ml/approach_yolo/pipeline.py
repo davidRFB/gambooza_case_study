@@ -193,6 +193,7 @@ def stage_yolo_tracking(cfg: dict, force: bool = False):
         tracker=yolo_cfg.get("tracker", "config/botsort.yaml"),
         preview_second=yolo_cfg.get("preview_second", 60.0),
         record_range=record_range,
+        save_video=yolo_cfg.get("save_video", False),
     )
 
 
@@ -238,6 +239,7 @@ def stage_relink(cfg: dict, force: bool = False):
         video_padding=relink_cfg.get("video_padding", 2.0),
         video_path=video_path,
         record_range=record_range,
+        save_video=relink_cfg.get("save_video", False),
     )
     cfg["_pour_events"] = pour_events
 

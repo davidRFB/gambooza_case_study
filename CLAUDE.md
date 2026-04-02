@@ -30,7 +30,7 @@ gambooza_case_study/
 │   │   └── schemas.py             # Pydantic response models
 │   ├── routers/
 │   │   ├── __init__.py
-│   │   ├── videos.py              # Upload, list, status, delete, process
+│   │   ├── videos.py              # Upload, list, status, delete, process, ROI, frame
 │   │   └── counts.py              # Query counts, summary
 │   ├── services/
 │   │   ├── __init__.py
@@ -54,21 +54,22 @@ gambooza_case_study/
 │   ├── test_app.py                 # FastAPI app health check
 │   ├── test_database.py            # DB models, columns, cascade delete
 │   ├── test_schemas.py             # Pydantic schema validation
-│   ├── test_videos_router.py       # Upload, list, status, delete, process endpoints
+│   ├── test_videos_router.py       # Upload, list, status, delete, process, ROI endpoints
 │   ├── test_counts_router.py       # Counts query and summary endpoints
-│   ├── test_processor.py           # ROI config loader, YOLO config builder, event mapper
+│   ├── test_processor.py           # ROI resolution, config loader, YOLO config builder, event mapper
 │   └── test_api_client.py          # Frontend API client (mocked HTTP calls)
 │
 ├── frontend/
-│   ├── app.py                      # Main Streamlit app (two tabs)
-│   ├── requirements.txt            # streamlit, requests
+│   ├── app.py                      # Main Streamlit app (two tabs + ROI wizard)
+│   ├── requirements.txt            # streamlit, requests, streamlit-cropper, Pillow
 │   └── utils/
 │       ├── __init__.py
-│       └── api_client.py           # Backend HTTP client (7 functions)
+│       └── api_client.py           # Backend HTTP client (11 functions)
 │
 ├── scripts/
-│   ├── run_simple.py               # CLI: run SimpleDetector on a video
-│   └── run_yolo_pipeline.py        # CLI: run YOLO+SAM3 pipeline on a video
+│   ├── run_simple.py               # CLI: run SimpleDetector on a video (+ clip extraction)
+│   ├── run_yolo_pipeline.py        # CLI: run YOLO+SAM3 pipeline on a video
+│   └── run_yolo_on_clips.py        # CLI: batch YOLO+SAM3 on activity clips
 │
 ├── config/
 │   ├── pipeline.yaml               # Default YOLO pipeline config
@@ -77,15 +78,11 @@ gambooza_case_study/
 │
 ├── data/
 │   ├── videos/                     # Source videos (cerveza1–7.mp4, etc.)
-│   ├── uploads/                    # User-uploaded videos (via API)
 │   ├── models/                     # ML weights (yolov8x-worldv2.pt, sam3.pt, etc.)
 │   ├── db_files/                   # SQLite database (app.db)
-│   └── roi_configs/                # Named ROI configs (default.json, etc.)
-│
-├── results/                        # Pipeline outputs (per-video directories)
-│   ├── web_{id}/                   # Web upload pipeline outputs
-│   ├── pipeline_cerveza*/          # CLI pipeline outputs
-│   └── simple_test_cerveza*/       # SimpleDetector outputs
+│   ├── roi_configs/                # ROI configs: {restaurant}_{camera}.json
+│   └── results/                    # Pipeline outputs + uploaded videos
+│       └── web_{id}/               # Per-video: uploaded video + pipeline outputs
 │
 ├── notes.txt                       # Development notes, TODOs, known issues
 │
@@ -118,7 +115,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - upload_data:/app/data/uploads
+      - results_data:/app/data/results
       - db_data:/app/data/db_files
     deploy:
       resources:
@@ -136,14 +133,14 @@ services:
       - BACKEND_URL=http://backend:8000
 
 volumes:
-  upload_data:
+  results_data:
   db_data:
 ```
 
 ### Key Docker Decisions
 
 - **GPU passthrough:** Use `nvidia-container-toolkit` so the backend container can access the host GPU. Required for both YOLO inference and faster OpenCV processing.
-- **Shared volumes:** Uploads saved by the backend; both services read the SQLite DB (though only the backend writes).
+- **Shared volumes:** Videos and pipeline outputs saved in `data/results/web_{id}/`; both services read the SQLite DB (though only the backend writes).
 - **Always YOLO:** Processing always runs the full YOLO+SAM3 pipeline. SimpleDetector is planned as a future pre-filter for long videos (see notes.txt).
 
 ### Backend Dockerfile Skeleton
@@ -179,7 +176,7 @@ CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0
 ```
 Table: videos
 ├── id                    INTEGER PK AUTOINCREMENT
-├── filename              TEXT NOT NULL          # UUID name on disk (in data/uploads/)
+├── filename              TEXT NOT NULL          # UUID name on disk (in data/results/web_{id}/)
 ├── original_name         TEXT NOT NULL          # user's original filename
 ├── upload_date           DATETIME DEFAULT now
 ├── status                TEXT DEFAULT 'pending' # pending | processing | completed | error
@@ -188,7 +185,9 @@ Table: videos
 ├── ml_approach           TEXT NULLABLE          # "yolo"
 ├── processing_started_at DATETIME NULLABLE
 ├── processing_finished_at DATETIME NULLABLE
-└── output_dir            TEXT NULLABLE          # path to pipeline intermediate files
+├── output_dir            TEXT NULLABLE          # path to pipeline intermediate files
+├── restaurant_name       TEXT NULLABLE          # e.g. "cerveceria_centro"
+└── camera_id             TEXT NULLABLE          # e.g. "cam1"
 
 Table: tap_events
 ├── id              INTEGER PK AUTOINCREMENT
@@ -207,11 +206,11 @@ Counts are computed as SUM(count) per tap, not COUNT(*).
 ### Pydantic Schemas (`backend/database/schemas.py`)
 
 Response models (not DB tables — shapes for API JSON):
-- `VideoUploadResponse(id, filename, original_name, status)`
-- `VideoStatusResponse(id, filename, original_name, upload_date, status, duration_sec, error_message, ml_approach, processing_started_at, processing_finished_at, output_dir, tap_a_count, tap_b_count, total, events)`
-- `VideoListItem(id, original_name, upload_date, status, ml_approach)`
+- `VideoUploadResponse(id, filename, original_name, status, restaurant_name, camera_id)`
+- `VideoStatusResponse(id, filename, original_name, upload_date, status, restaurant_name, camera_id, duration_sec, error_message, ml_approach, processing_started_at, processing_finished_at, output_dir, tap_a_count, tap_b_count, total, events)`
+- `VideoListItem(id, original_name, upload_date, status, ml_approach, restaurant_name, camera_id)`
 - `TapEventResponse(id, tap, frame_start, frame_end, timestamp_start, timestamp_end, confidence, count)`
-- `CountResult(video_id, original_name, upload_date, tap_a, tap_b, total)`
+- `CountResult(video_id, original_name, upload_date, restaurant_name, camera_id, tap_a, tap_b, total)`
 - `CountSummary(tap_a_total, tap_b_total, grand_total, video_count)`
 
 ### Migration Strategy
@@ -233,20 +232,24 @@ app.include_router(counts_router, prefix="/api/counts")
 
 ### Router: Videos (`backend/routers/videos.py`)
 
-| Method | Endpoint                   | Purpose                                              |
-|--------|----------------------------|------------------------------------------------------|
-| POST   | `/api/videos/upload`       | Accept mp4/mov, save to `data/uploads/`, create DB row |
-| POST   | `/api/videos/{id}/process` | Launch background YOLO pipeline, returns 202         |
-| GET    | `/api/videos/{id}/status`  | Return status + counts + events if completed         |
-| GET    | `/api/videos/`             | List all uploaded videos                             |
-| DELETE | `/api/videos/{id}`         | Remove video file + DB records (cascade)             |
+| Method | Endpoint                        | Purpose                                                    |
+|--------|---------------------------------|------------------------------------------------------------|
+| POST   | `/api/videos/upload`            | Accept mp4/mov + restaurant/camera, save to `data/results/web_{id}/` |
+| POST   | `/api/videos/{id}/process`      | Launch background YOLO pipeline, returns 202               |
+| GET    | `/api/videos/{id}/status`       | Return status + counts + events if completed               |
+| GET    | `/api/videos/`                  | List all uploaded videos                                   |
+| DELETE | `/api/videos/{id}`              | Remove video dir + DB records (cascade)                    |
+| GET    | `/api/videos/restaurants`       | List known restaurant+camera combos (from DB + config files) |
+| GET    | `/api/videos/roi-config-exists` | Check if ROI config exists for restaurant+camera           |
+| POST   | `/api/videos/roi-config`        | Save ROI config JSON for a restaurant+camera combo         |
+| GET    | `/api/videos/{id}/frame`        | Return first frame of video as JPEG                        |
 
 #### Upload Flow
 
 1. Validate file extension (.mp4, .mov only).
 2. Generate unique filename: `{uuid8}_{original_name}`.
-3. Save to `data/uploads/`.
-4. Insert row in `videos` table with `status='pending'`.
+3. Insert row in `videos` table with `status='pending'`, `restaurant_name`, `camera_id`.
+4. Create directory `data/results/web_{id}/` and save video file there.
 5. Return `VideoUploadResponse`.
 
 #### Process Flow
@@ -257,9 +260,9 @@ app.include_router(counts_router, prefix="/api/counts")
 4. Background task creates its own `SessionLocal()` (request session closes on response).
 5. Processor runs YOLO pipeline, writes `tap_events`, updates status.
 
-#### Process Endpoint Parameters
+#### Process Endpoint
 
-- `roi_config` (query, default `"default"`) — name of ROI config in `data/roi_configs/`
+No parameters needed — ROI config is resolved automatically from the video's `restaurant_name` + `camera_id` fields. The config file `data/roi_configs/{restaurant}_{camera}.json` must exist before processing (no default fallback).
 
 ### Router: Counts (`backend/routers/counts.py`)
 
@@ -271,35 +274,33 @@ app.include_router(counts_router, prefix="/api/counts")
 ### Background Processing (`backend/services/processor.py`)
 
 ```
-process_video(video_id, db, roi_config="default"):
+process_video(video_id, db):
     1. Set status='processing', record processing_started_at
-    2. Load ROI config from data/roi_configs/{roi_config}.json
+    2. Resolve ROI config from video's restaurant_name + camera_id:
+       - Looks for data/roi_configs/{restaurant}_{camera}.json
+       - Raises error if not found (no default fallback)
     3. Create temp YAML config from config/pipeline.yaml:
-       - Override video_path → data/uploads/{filename}
-       - Override output_dir → results/web_{video_id}/
+       - Override video_path → data/results/web_{video_id}/{filename}
+       - Override output_dir → data/results/web_{video_id}/
        - Override roi.tap_roi + sam3.tap_bboxes from ROI config
        - Resolve all relative paths to absolute (tracker, models)
        - Pre-create tap_roi.json in output_dir (skip interactive mode)
     4. Run YOLODetector(temp_config).run()
-    5. Map pour_events to DB TapEvent rows:
+    5. Clear any existing tap_events for this video (re-processing safe)
+    6. Map pour_events to DB TapEvent rows:
        - "TAP_A" → "A", "TAP_B" → "B"
        - "time_start"/"time_end" → timestamp_start/timestamp_end
        - UNKNOWN or unassigned events are skipped
-    6. Set status='completed', record processing_finished_at, output_dir
-    7. On exception: status='error', save error_message
+    7. Set status='completed', record processing_finished_at, output_dir
+    8. On exception: status='error', save error_message
 ```
 
 ### ROI Config System (`data/roi_configs/`)
 
-Named JSON files with ROI coordinates for different camera setups:
+ROI configs are JSON files named by restaurant+camera: `{restaurant_name}_{camera_id}.json`. There is **no default fallback** — each restaurant+camera combo must have its own config. Configs can be created via the frontend's visual ROI wizard or the CLI interactive tools.
 
 ```json
 {
-  "simple": {
-    "tap_roi": [0.4678, 0.3737, 0.6311, 0.5540],
-    "tap_a_roi": [0.4827, 0.4470, 0.5245, 0.4705],
-    "tap_b_roi": [0.5638, 0.4103, 0.5764, 0.5340]
-  },
   "yolo": {
     "tap_roi": [0.4483, 0.3702, 0.6655, 0.8278],
     "sam3_tap_bboxes": [
@@ -310,10 +311,10 @@ Named JSON files with ROI coordinates for different camera setups:
 }
 ```
 
-- `simple` section: normalized ROIs for SimpleDetector (future use)
-- `yolo` section: crop region + pixel-space SAM3 bounding boxes
-- `default.json` ships with cerveza camera values
-- New cameras → new JSON file (via CLI interactive tools, frontend picker in Phase 3)
+- `yolo.tap_roi`: normalized (0–1) crop region on the full frame
+- `yolo.sam3_tap_bboxes`: pixel-space bounding boxes on the cropped frame for TAP_A and TAP_B
+- Resolution: `_resolve_roi_config_name(restaurant, camera)` → returns `"{restaurant}_{camera}"` if file exists, else `None` (error)
+- Naming validated: only `[a-zA-Z0-9_-]` allowed in restaurant_name and camera_id
 
 ### Error Handling Patterns
 
@@ -327,25 +328,35 @@ Named JSON files with ROI coordinates for different camera setups:
 
 ### Layout (`frontend/app.py`)
 
-Two-tab layout:
+Two-tab layout with ROI wizard:
 
 ```
 Page: Beer Tap Counter
 │
 ├── Tab 1: Upload & Process
 │   ├── Recent videos list (last 5, with status icons)
+│   ├── Restaurant selector (dropdown + "Add new...")
+│   ├── Camera ID selector (dropdown + "Add new...", filtered by restaurant)
+│   ├── Preview ROI checkbox (only when config exists for selected combo)
 │   ├── File uploader (mp4/mov) — auto-uploads on file select
-│   │   └── Auto-triggers processing (or queues if another is running)
+│   │   ├── If ROI config exists + preview unchecked: auto-triggers processing
+│   │   ├── If ROI config exists + preview checked: shows ROI confirmation page
+│   │   │   ├── First frame with ROI boxes (crop=orange, TAP A=blue, TAP B=green)
+│   │   │   ├── "Confirm & Process" / "Re-draw ROI" / "Cancel"
+│   │   └── If no ROI config: enters ROI wizard (3-step)
+│   │       ├── Step 1: Select crop region on full frame (streamlit-cropper)
+│   │       ├── Step 2: Select TAP A handle on cropped image
+│   │       ├── Step 3: Select TAP B handle on cropped image → save & process
 │   └── Active video status:
-│       ├── If pending/queued: warning + "Refresh Status" button
-│       ├── If processing:     warning + "Refresh Status" button
+│       ├── If pending/queued: warning + auto-poll
+│       ├── If processing:     warning + auto-poll
 │       ├── If completed:      success + metrics (Tap A, Tap B, Total) + events table
 │       └── If error:          error message
 │
 └── Tab 2: Dashboard
     ├── Refresh button
     ├── Global summary: 4x st.metric (Tap A Total, Tap B Total, Grand Total, Videos Processed)
-    └── Video list: expandable per video
+    └── Video list: expandable per video (shows restaurant/camera in label)
         ├── Completed: metrics + events table
         ├── Error: error message
         ├── Other: status info
@@ -360,11 +371,15 @@ Thin wrapper using `requests`, configured via `BACKEND_URL` env var (default `ht
 |----------|----------|---------|
 | `list_videos()` | GET /api/videos/ | list[dict] |
 | `get_video_status(video_id)` | GET /api/videos/{id}/status | dict |
-| `upload_video(name, file_bytes)` | POST /api/videos/upload | dict |
+| `upload_video(name, file_bytes, restaurant_name, camera_id)` | POST /api/videos/upload | dict |
 | `process_video(video_id)` | POST /api/videos/{id}/process | HTTP status code |
 | `delete_video(video_id)` | DELETE /api/videos/{id} | bool |
 | `get_counts_summary()` | GET /api/counts/summary | dict |
 | `get_counts()` | GET /api/counts/ | list[dict] |
+| `get_restaurants()` | GET /api/videos/restaurants | dict |
+| `check_roi_config(restaurant, camera)` | GET /api/videos/roi-config-exists | dict |
+| `get_video_frame(video_id)` | GET /api/videos/{id}/frame | bytes (JPEG) |
+| `save_roi_config(restaurant, camera, roi_data)` | POST /api/videos/roi-config | dict |
 
 ### Queue Management (Frontend-side)
 
@@ -440,8 +455,9 @@ Key parameters (from config):
 - `sample_every: 1` — process every frame (configurable)
 - `conf_threshold: 0.25`
 - `record_range` — optional time window `[start_s, stop_s]`
+- `save_video: false` — when true, saves `yolo_raw_tracking.mp4` (pre-relink annotated video)
 
-Output: `raw_detections.csv` with per-frame bounding boxes and track IDs.
+Output: `raw_detections.csv` with per-frame bounding boxes and track IDs. `summary.json` includes `tracking_elapsed_s`. Execution time is tracked at all levels: per-stage in `yolo_track.py`, per-pipeline in `detector.py`/`pipeline.py`, and per-batch in `run_yolo_on_clips.py`.
 
 ### Stage 3: Relink
 
@@ -458,6 +474,22 @@ Key parameters:
 - `max_interp_gap: 10` — interpolate gaps up to this many frames
 - `stationary_ratio: 0.8` — fraction of frames near median position to be considered stationary
 - `stationary_px: 10.0` — pixel radius for "same spot" check
+
+#### Resolution-Aware Scaling
+
+Pixel-based thresholds (`movement_threshold`, `stationary_px`) were calibrated on ~800px-wide crops from 4K video. For lower-resolution videos (e.g. 640x360 with a ~111px crop), these thresholds are too strict and miss real pour events.
+
+The relink stage auto-detects the crop width from `tap_roi.json` + video resolution and scales thresholds proportionally when the crop is smaller than 90% of the 800px reference:
+
+```
+scale = crop_width / 800.0
+movement_threshold_effective = movement_threshold * scale
+stationary_px_effective = stationary_px * scale
+```
+
+Example: 111px crop → scale=0.14 → `movement_threshold: 5.0 → 0.7px`, `stationary_px: 10.0 → 1.4px`.
+
+Font sizes, line thicknesses, and timestamp overlays in annotated videos (`draw_detections`, `render_annotated_video`, `yolo_raw_tracking.mp4`) also scale proportionally to crop width via `_font_scale_for_width()`.
 
 Output: `relinked_detections.csv`, `pour_events.json`, `pour_frame_ranges.json`.
 
@@ -505,13 +537,15 @@ yolo:
   sample_every: 1
   conf_threshold: 0.25
   tracker: config/botsort.yaml
+  save_video: false        # save yolo_raw_tracking.mp4 (pre-relink annotated video)
 
 relink:
   overlap_threshold: 15
   min_pour_frames: 30
-  movement_threshold: 5.0
-  stationary_ratio: 0.8   # skip cups stationary for >80% of their lifespan
-  stationary_px: 10.0     # px radius for "same spot"
+  movement_threshold: 5.0  # auto-scaled by crop resolution (ref: 800px)
+  stationary_ratio: 0.8    # skip cups stationary for >80% of their lifespan
+  stationary_px: 10.0      # auto-scaled by crop resolution (ref: 800px)
+  save_video: false         # save relinked_full.mp4 (post-relink annotated video)
 
 sam3:
   model: data/models/sam3.pt
@@ -548,8 +582,9 @@ python scripts/run_yolo_pipeline.py --config config/pipeline.yaml --force
 | `backend/ml/approach_yolo/yolo_track.py` | YOLO-World + BoT-SORT tracking |
 | `backend/ml/approach_yolo/relink.py` | Track relinking + pour classification |
 | `backend/ml/approach_yolo/sam3_tracking.py` | SAM3 tap handle segmentation |
-| `scripts/run_simple.py` | CLI entry for SimpleDetector |
+| `scripts/run_simple.py` | CLI entry for SimpleDetector (+ activity clip extraction) |
 | `scripts/run_yolo_pipeline.py` | CLI entry for YOLO pipeline |
+| `scripts/run_yolo_on_clips.py` | Batch YOLO+SAM3 on activity clips (same code path as backend) |
 | `config/pipeline.yaml` | Default YOLO pipeline config |
 | `config/botsort.yaml` | BoT-SORT tracker config |
 
@@ -557,19 +592,19 @@ python scripts/run_yolo_pipeline.py --config config/pipeline.yaml --force
 
 ## 7. Testing
 
-### Test Suite (44 tests)
+### Test Suite (59 tests)
 
 Run with: `uv run pytest tests/ -v`
 
 | File | Tests | What it covers |
 |------|-------|----------------|
 | `test_app.py` | 2 | Health check, /docs available |
-| `test_database.py` | 6 | Table existence, column names, insert, cascade delete |
+| `test_database.py` | 6 | Table existence, column names (incl. restaurant_name, camera_id), insert, cascade delete |
 | `test_schemas.py` | 5 | Pydantic model instantiation and serialization |
-| `test_videos_router.py` | 9 | Upload, reject bad extension, list, status, 404s, process 202, delete |
+| `test_videos_router.py` | 16 | Upload (with/without restaurant+camera), reject bad extension, list, status, 404s, process 202, delete, ROI config endpoints (exists, save, validation), restaurants list |
 | `test_counts_router.py` | 4 | Counts query, filter by tap, empty results, summary |
-| `test_processor.py` | 8 | ROI config loading/validation, YOLO config builder (mocked), event mapping |
-| `test_api_client.py` | 10 | Frontend API client: list, upload, process, status, delete (mocked HTTP) |
+| `test_processor.py` | 11 | ROI config loading/validation, ROI resolution (existing file, missing, None values), YOLO config builder (mocked), event mapping |
+| `test_api_client.py` | 15 | Frontend API client: list, upload (with restaurant+camera), process, status, delete, restaurants, ROI config check, frame, save ROI (mocked HTTP) |
 
 ### Testing patterns
 
@@ -626,14 +661,15 @@ Notebook-based exploration → two production detectors:
 ### Phase 2: Application Skeleton (DONE — backend, frontend TODO)
 
 1. ✅ Database models, connection, schemas (`backend/database/`).
-2. ✅ FastAPI endpoints — videos router (upload, list, status, delete, process).
+2. ✅ FastAPI endpoints — videos router (upload, list, status, delete, process, ROI, frame, restaurants).
 3. ✅ Counts router (query with filters, summary).
 4. ✅ Background processor service — bridges YOLO pipeline to DB.
-5. ✅ ROI config system — named JSON configs for different camera setups.
-6. ✅ 44 tests covering all layers (including frontend api_client).
-7. ✅ End-to-end tested: upload → process → completed with tap events.
-8. ✅ Streamlit UI — two tabs (Upload & Process, Dashboard), queue management, delete.
-9. 🔲 Create Dockerfiles and docker-compose.yml.
+5. ✅ ROI config system — `{restaurant}_{camera}.json` configs, no default fallback.
+6. ✅ Restaurant + Camera ID on Video model, resolved to ROI config automatically.
+7. ✅ 59 tests covering all layers (including frontend api_client).
+8. ✅ End-to-end tested: upload → process → completed with tap events.
+9. ✅ Streamlit UI — two tabs, restaurant/camera dropdowns, ROI wizard (streamlit-cropper), ROI preview, queue management, delete.
+10. 🔲 Create Dockerfiles and docker-compose.yml.
 
 ### Phase 3: Polish
 
@@ -660,7 +696,7 @@ These should go in the README or be prepared as talking points:
 
 5. **Background processing:** FastAPI BackgroundTasks is simple but limited (no retry, no queue). For production, you'd use Celery + Redis. For this demo, BackgroundTasks is sufficient.
 
-6. **ROI configs:** ROIs are stored as named JSON configs per camera setup. A production system would need a calibration UI or auto-detection. For the demo, `default.json` with cerveza camera values works for all provided videos.
+6. **ROI configs:** ROIs are stored as `{restaurant}_{camera}.json` configs. The frontend provides a visual 3-step ROI wizard using `streamlit-cropper`. No default fallback — each restaurant+camera combo must be calibrated. A production system could add auto-detection.
 
 7. **Tap assignment in detector vs pipeline:** The tap assignment logic (`_assign_pours_to_taps`) was originally only in `pipeline.py:main()` (CLI path). It's now also called in `YOLODetector.run()` so the web flow gets tap-assigned results.
 
@@ -671,11 +707,11 @@ These should go in the README or be prepared as talking points:
 Before the presentation, verify:
 
 - [x] Backend starts without errors: `uvicorn backend.main:app --port 8000`
-- [x] All 44 tests pass: `python -m pytest tests/ -v`
-- [x] Upload a video: `POST /api/videos/upload`
+- [x] All 59 tests pass: `uv run pytest tests/ -v`
+- [x] Upload a video with restaurant+camera: `POST /api/videos/upload?restaurant_name=X&camera_id=Y`
 - [x] Processing starts: `POST /api/videos/{id}/process` returns 202
 - [x] Processing completes: status updates to 'completed'
-- [x] Pipeline outputs saved to `results/web_{id}/`
+- [x] Pipeline outputs + video saved to `data/results/web_{id}/`
 - [ ] Tap A count, Tap B count, and Total are displayed correctly
 - [ ] Counts match manual count from watching the video
 - [ ] Uploading a second video works and shows separate results
@@ -696,7 +732,8 @@ All dependencies are managed in `pyproject.toml` with `uv`.
 ```
 opencv-python, numpy, matplotlib, pandas, ultralytics,
 fastapi, uvicorn[standard], sqlalchemy, aiofiles,
-python-multipart, pyyaml, streamlit, requests
+python-multipart, pyyaml, streamlit, requests,
+streamlit-cropper
 ```
 
 ### Dev dependencies (`[dependency-groups].dev`)
