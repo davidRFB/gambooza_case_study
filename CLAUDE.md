@@ -106,51 +106,6 @@ gambooza_case_study/
 
 ### docker-compose.yml
 
-Two services: backend with GPU passthrough, frontend depending on backend health.
-Host `./data/` directory is bind-mounted to `/app/mount_data` in the backend container.
-
-```yaml
-services:
-  backend:
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-    ports:
-      - "8000:8000"
-    environment:
-      - DATA_DIR=/app/mount_data
-      - DATABASE_URL=sqlite:////app/mount_data/db_files/app.db
-      - ML_APPROACH=${ML_APPROACH:-yolo}
-    volumes:
-      - ./data:/app/mount_data
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python3.11", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
-
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    ports:
-      - "8501:8501"
-    environment:
-      - BACKEND_URL=http://backend:8000
-    depends_on:
-      backend:
-        condition: service_healthy
-    restart: unless-stopped
-```
 
 ### Key Docker Decisions
 
@@ -163,37 +118,6 @@ services:
 Multi-stage build: builder (uv + deps) → runtime (CUDA + Python 3.11).
 
 ```dockerfile
-# ── Builder stage: install dependencies with uv ──────────────────
-FROM python:3.11-slim AS builder
-RUN apt-get update && apt-get install -y --no-install-recommends git build-essential \
-    && rm -rf /var/lib/apt/lists/*
-ENV PYTHONDONTWRITEBYTECODE=1 UV_COMPILE_BYTECODE=0 UV_LINK_MODE=copy
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-WORKDIR /app
-COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
-
-# ── Runtime stage: CUDA + Python 3.11 ────────────────────────────
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
-ENV DEBIAN_FRONTEND=noninteractive PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
-    MPLBACKEND=Agg YOLO_AUTOINSTALL=False
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    software-properties-common && add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 python3.11-venv python3.11-dev \
-    libgl1-mesa-glx libglib2.0-0 ffmpeg gcc g++ \
-    && rm -rf /var/lib/apt/lists/*
-WORKDIR /app
-COPY --from=builder /app/.venv /app/.venv
-RUN ln -sf /usr/bin/python3.11 /app/.venv/bin/python && \
-    ln -sf /usr/bin/python3.11 /app/.venv/bin/python3
-ENV PATH="/app/.venv/bin:$PATH"
-COPY backend/ ./backend/
-COPY config/ ./config/
-EXPOSE 8000
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
-```
-
 Key details:
 - **`build-essential` in builder:** Required for compiling `lap` (C extension used by BoT-SORT tracker).
 - **`gcc g++ python3.11-dev` in runtime:** Required for PyTorch Triton JIT compilation (SAM3 uses torch.compile/inductor which compiles CUDA kernels at runtime).
@@ -202,17 +126,6 @@ Key details:
 
 ### Frontend Dockerfile (`Dockerfile.frontend`)
 
-```dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY frontend/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
-COPY frontend/ ./
-EXPOSE 8501
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
-```
-
-### Docker Path Resolution
 
 In Docker, data lives at `/app/mount_data/` (bind-mounted from `./data`), but `config/pipeline.yaml` has relative paths like `data/models/sam3.pt`. The processor (`backend/services/processor.py`) resolves these using `_resolve_path()`:
 - Paths starting with `data/` → resolved relative to `DATA_DIR` (`/app/mount_data/`)
@@ -283,19 +196,6 @@ app.include_router(videos_router, prefix="/api/videos")
 app.include_router(counts_router, prefix="/api/counts")
 ```
 
-### Router: Videos (`backend/routers/videos.py`)
-
-| Method | Endpoint                        | Purpose                                                    |
-|--------|---------------------------------|------------------------------------------------------------|
-| POST   | `/api/videos/upload`            | Accept mp4/mov + restaurant/camera, save to `data/results/web_{id}/` |
-| POST   | `/api/videos/{id}/process`      | Launch background YOLO pipeline, returns 202               |
-| GET    | `/api/videos/{id}/status`       | Return status + counts + events if completed               |
-| GET    | `/api/videos/`                  | List all uploaded videos                                   |
-| DELETE | `/api/videos/{id}`              | Remove video dir + DB records (cascade)                    |
-| GET    | `/api/videos/restaurants`       | List known restaurant+camera combos (from DB + config files) |
-| GET    | `/api/videos/roi-config-exists` | Check if ROI config exists for restaurant+camera           |
-| POST   | `/api/videos/roi-config`        | Save ROI config JSON for a restaurant+camera combo         |
-| GET    | `/api/videos/{id}/frame`        | Return first frame of video as JPEG                        |
 
 #### Upload Flow
 
@@ -625,46 +525,6 @@ Output: `pour_events_assigned.json` (enriched pour events with `tap` field).
 ### Pipeline Config (`config/pipeline.yaml`)
 
 ```yaml
-video_path: data/videos/cerveza2.mp4
-output_dir: results/pipeline_cerveza2
-
-stages:
-  roi_selection: true
-  yolo_tracking: true
-  relink: true
-  sam3_tap_tracking: true
-
-roi:
-  roi_json: null       # reuse from another run, or null for interactive
-  tap_roi: null        # [x1, y1, x2, y2] normalized, or null
-  tap_divider: null    # optional, not used by YOLO/relink
-
-yolo:
-  model: data/models/yolov8x-worldv2.pt
-  classes: [cup, person]
-  sample_every: 1
-  conf_threshold: 0.25
-  tracker: config/botsort.yaml
-  save_video: false        # save yolo_raw_tracking.mp4 (pre-relink annotated video)
-
-relink:
-  overlap_threshold: 15
-  min_pour_frames: 30
-  movement_threshold: 5.0  # auto-scaled by crop resolution (ref: 800px)
-  stationary_ratio: 0.8    # skip cups stationary for >80% of their lifespan
-  stationary_px: 10.0      # auto-scaled by crop resolution (ref: 800px)
-  save_video: false         # save relinked_full.mp4 (post-relink annotated video)
-
-sam3:
-  model: data/models/sam3.pt
-  object_labels: [TAP_A, TAP_B]
-  tap_bboxes: null     # pixel-space on cropped frame, or null for interactive
-  frame_skip: 5
-  half: true
-```
-
-### Running the YOLO Pipeline
-
 ```bash
 # Full pipeline (interactive ROI + bbox selection on first run):
 python scripts/run_yolo_pipeline.py --config config/pipeline.yaml --interactive
@@ -704,16 +564,6 @@ python scripts/run_yolo_pipeline.py --config config/pipeline.yaml --force
 ### Test Suite (59 tests)
 
 Run with: `uv run pytest tests/ -v`
-
-| File | Tests | What it covers |
-|------|-------|----------------|
-| `test_app.py` | 2 | Health check, /docs available |
-| `test_database.py` | 6 | Table existence, column names (incl. restaurant_name, camera_id), insert, cascade delete |
-| `test_schemas.py` | 5 | Pydantic model instantiation and serialization |
-| `test_videos_router.py` | 16 | Upload (with/without restaurant+camera), reject bad extension, list, status, 404s, process 202, delete, ROI config endpoints (exists, save, validation), restaurants list |
-| `test_counts_router.py` | 4 | Counts query, filter by tap, empty results, summary |
-| `test_processor.py` | 11 | ROI config loading/validation, ROI resolution (existing file, missing, None values), YOLO config builder (mocked), event mapping |
-| `test_api_client.py` | 15 | Frontend API client: list, upload (with restaurant+camera), process, status, delete, restaurants, ROI config check, frame, save ROI (mocked HTTP) |
 
 ### Testing patterns
 
@@ -756,102 +606,6 @@ Run with: `uv run pytest tests/ -v`
 
 ---
 
-## 9. Development Workflow
-
-### Phase 1: ML Pipeline (DONE)
-
-Notebook-based exploration → two production detectors:
-1. Explored videos, calibrated ROIs interactively (`notebooks/01_explore*.py`).
-2. Built YOLO-World + BoT-SORT + Relink + SAM3 pipeline (now in `backend/ml/approach_yolo/`).
-3. Built SimpleDetector — CPU pixel differencing (now in `backend/ml/approach_simple/`).
-4. Validated YOLO pipeline across multiple videos (pipeline1–7 configs).
-5. Organized: production code in `backend/ml/`, exploration in `notebooks/`, CLIs in `scripts/`.
-
-### Phase 2: Application Skeleton (DONE — backend, frontend TODO)
-
-1. ✅ Database models, connection, schemas (`backend/database/`).
-2. ✅ FastAPI endpoints — videos router (upload, list, status, delete, process, ROI, frame, restaurants).
-3. ✅ Counts router (query with filters, summary).
-4. ✅ Background processor service — bridges YOLO pipeline to DB.
-5. ✅ ROI config system — `{restaurant}_{camera}.json` configs, no default fallback.
-6. ✅ Restaurant + Camera ID on Video model, resolved to ROI config automatically.
-7. ✅ 59 tests covering all layers (including frontend api_client).
-8. ✅ End-to-end tested: upload → process → completed with tap events.
-9. ✅ Streamlit UI — two tabs, restaurant/camera dropdowns, ROI wizard (streamlit-cropper), ROI preview, queue management, delete.
-10. ✅ Dockerfiles (multi-stage backend + frontend) and docker-compose.yml.
-
-### Phase 3: Polish
-
-1. Test with all provided videos, fix edge cases.
-2. Add error handling and input validation.
-3. Write README with setup instructions.
-4. Clean up code.
-5. Test the Docker build from scratch to ensure it works cleanly.
-6. **Goal:** Demo-ready. `docker-compose up` → open browser → upload new video → correct results.
-
----
-
-## 10. Critical Trade-offs to Document (for the presentation)
-
-These should go in the README or be prepared as talking points:
-
-1. **Simple vs YOLO (hybrid approach implemented):** Simple is faster and requires no GPU but is fragile to environmental changes. YOLO is robust but heavier. The hybrid approach is implemented: SimpleDetector scans the full video on CPU (~15s for 2h), finds activity windows, extracts clips, then YOLO+SAM3 runs only on those clips. Activated automatically for videos > 2500 frames when the ROI config has a `simple` section.
-
-2. **Frame sampling rate:** Processing every frame is accurate but slow (a 2h video at 30fps = 216,000 frames). Sampling every 3rd frame (10 effective fps) cuts processing by 3x with negligible accuracy loss for events lasting several seconds.
-
-3. **SQLite vs Postgres:** SQLite is single-writer, which is fine for single-user demo. Postgres would be needed for concurrent users. SQLite keeps Docker setup trivial.
-
-4. **Streamlit vs React:** Streamlit is less customizable but delivers the required UI in ~100 lines. React would require separate build tooling, more code, and a Node.js container.
-
-5. **Background processing:** FastAPI BackgroundTasks is simple but limited (no retry, no queue). For production, you'd use Celery + Redis. For this demo, BackgroundTasks is sufficient.
-
-6. **ROI configs:** ROIs are stored as `{restaurant}_{camera}.json` configs. The frontend provides a visual 3-step ROI wizard using `streamlit-cropper`. No default fallback — each restaurant+camera combo must be calibrated. A production system could add auto-detection.
-
-7. **Tap assignment in detector vs pipeline:** The tap assignment logic (`_assign_pours_to_taps`) was originally only in `pipeline.py:main()` (CLI path). It's now also called in `YOLODetector.run()` so the web flow gets tap-assigned results.
-
----
-
-## 11. Validation Checklist (Pre-Demo)
-
-Before the presentation, verify:
-
-- [x] Backend starts without errors: `uvicorn backend.main:app --port 8000`
-- [x] All 59 tests pass: `uv run pytest tests/ -v`
-- [x] Upload a video with restaurant+camera: `POST /api/videos/upload?restaurant_name=X&camera_id=Y`
-- [x] Processing starts: `POST /api/videos/{id}/process` returns 202
-- [x] Processing completes: status updates to 'completed'
-- [x] Pipeline outputs + video saved to `data/results/web_{id}/`
-- [ ] Tap A count, Tap B count, and Total are displayed correctly
-- [ ] Counts match manual count from watching the video
-- [ ] Uploading a second video works and shows separate results
-- [ ] Query by date/tap works via `/api/counts/`
-- [x] Error case: upload a non-video file → 422 error
-- [ ] `docker-compose up` builds and starts both services
-- [ ] Frontend is accessible at `localhost:8501`
-- [ ] Processing a 2h video completes in reasonable time (< 5 min with GPU)
-
----
-
-## 12. Dependencies Summary
-
-All dependencies are managed in `pyproject.toml` with `uv`.
-
-### Production dependencies (`[project].dependencies`)
-
-```
-opencv-python, numpy, matplotlib, pandas, ultralytics,
-clip (git+https://github.com/ultralytics/CLIP.git),
-lap, timm,
-fastapi, uvicorn[standard], sqlalchemy, aiofiles,
-python-multipart, pyyaml, streamlit, requests,
-streamlit-cropper
-```
-
-### Dev dependencies (`[dependency-groups].dev`)
-
-```
-pytest, ruff, pre-commit, httpx, ipython, ipykernel
-```
 
 ### Environment
 

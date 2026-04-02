@@ -1,8 +1,7 @@
-import time
-
 import pandas as pd
 import streamlit as st
 from utils.api_client import (
+    BackendUnavailable,
     check_roi_config,
     delete_video,
     get_counts_summary,
@@ -15,17 +14,213 @@ from utils.api_client import (
     upload_video,
 )
 
-st.set_page_config(page_title="Beer Tap Counter", layout="wide")
-st.title("Beer Tap Counter")
+st.set_page_config(page_title="Contador de Cervezas — Gambooza", layout="wide")
 
-tab_upload, tab_dashboard = st.tabs(["Upload & Process", "Dashboard"])
+# -- Gambooza brand styling --
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Fira+Sans:wght@500;600;700&family=Archivo:wght@400;600&display=swap');
+
+    /* Global text */
+    html, body, [class*="css"] {
+        font-family: 'Archivo', sans-serif;
+        color: #2E3D34;
+    }
+
+    /* Headings */
+    h1, h2, h3, h4, h5, h6,
+    .stTabs [data-baseweb="tab"] {
+        font-family: 'Fira Sans', sans-serif !important;
+        color: #2E3D34 !important;
+    }
+
+    /* Page background */
+    .stApp {
+        background-color: #DDF6F3;
+    }
+
+    /* Sidebar */
+    section[data-testid="stSidebar"] {
+        background-color: #F4FFF8;
+    }
+
+    /* Metric cards */
+    [data-testid="stMetric"] {
+        background-color: #F4FFF8;
+        border: 1px solid #A8D4B9;
+        border-radius: 8px;
+        padding: 12px 16px;
+    }
+    [data-testid="stMetricValue"] {
+        color: #2E3D34 !important;
+        font-family: 'Fira Sans', sans-serif !important;
+        font-weight: 700 !important;
+    }
+    [data-testid="stMetricLabel"] {
+        color: #87ACA7 !important;
+        font-family: 'Archivo', sans-serif !important;
+        font-weight: 600 !important;
+    }
+
+    /* Primary buttons */
+    .stButton > button[kind="primary"],
+    .stButton > button[data-testid="stBaseButton-primary"] {
+        background-color: #A8D4B9 !important;
+        color: #2E3D34 !important;
+        border: none !important;
+        font-family: 'Archivo', sans-serif !important;
+        font-weight: 600 !important;
+        border-radius: 6px !important;
+    }
+    .stButton > button[kind="primary"]:hover,
+    .stButton > button[data-testid="stBaseButton-primary"]:hover {
+        background-color: #8BAB87 !important;
+        color: #F4FFF8 !important;
+    }
+
+    /* Secondary/default buttons */
+    .stButton > button {
+        background-color: #F4FFF8 !important;
+        border: 1px solid #A8D4B9 !important;
+        color: #2E3D34 !important;
+        font-family: 'Archivo', sans-serif !important;
+        border-radius: 6px !important;
+    }
+    .stButton > button:hover {
+        border-color: #8BAB87 !important;
+        background-color: #E5F5E3 !important;
+        color: #2E3D34 !important;
+    }
+
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        background-color: #F4FFF8;
+        border-radius: 6px 6px 0 0;
+        padding: 8px 20px;
+        font-weight: 600 !important;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #A8D4B9 !important;
+        color: #2E3D34 !important;
+    }
+    .stTabs [data-baseweb="tab-highlight"] {
+        background-color: #A8D4B9 !important;
+    }
+
+    /* Expanders */
+    .streamlit-expanderHeader {
+        font-family: 'Fira Sans', sans-serif !important;
+        font-weight: 600 !important;
+        color: #2E3D34 !important;
+        background-color: #F4FFF8;
+        border-radius: 6px;
+    }
+
+    /* Dataframes */
+    .stDataFrame {
+        border: 1px solid #A8D4CF;
+        border-radius: 6px;
+    }
+
+    /* File uploader */
+    [data-testid="stFileUploader"] {
+        border-color: #A8D4B9 !important;
+    }
+
+    /* Selectbox */
+    [data-baseweb="select"] > div {
+        border-color: #A8D4B9 !important;
+    }
+
+    /* Success/warning/error messages */
+    .stSuccess { border-left-color: #A8D4B9 !important; }
+    .stWarning { border-left-color: #8BAB87 !important; }
+
+    /* Dividers */
+    hr {
+        border-color: #A8D4CF !important;
+    }
+
+    /* Title styling */
+    .gambooza-title {
+        font-family: 'Fira Sans', sans-serif;
+        font-weight: 700;
+        color: #2E3D34;
+        font-size: 2.4rem;
+        margin-bottom: 1.5rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown('<div class="gambooza-title">Contador de Cervezas</div>', unsafe_allow_html=True)
+
+# Help text
+_HELP_TEXT = (
+    "Esta aplicacion analiza videos de dispensadores de cerveza para contar "
+    "automaticamente las cervezas servidas en cada grifo (Tap A y Tap B).\n\n"
+    "**Restaurante y camara:** Al subir un video se selecciona el nombre del restaurante "
+    "y un identificador de camara. Esto permite guardar configuraciones separadas "
+    "segun la resolucion o posicion de cada camara. Todo queda almacenado para "
+    "futuros videos de la misma camara.\n\n"
+    "**Regiones de interes (ROI):** La primera vez que se sube un video para una "
+    "combinacion de restaurante y camara, se abre un asistente de 5 pasos para "
+    "definir las regiones de interes:\n\n"
+    "- **Regiones de filtro 1 y 2 (pasos 1 y 2):** Se selecciona un recuadro pequeno "
+    "sobre cada grifo, en la zona donde cae el liquido. Estas regiones se usan para "
+    "detectar rapidamente en que momentos hay actividad, sin necesidad de analizar "
+    "el video completo.\n"
+    "- **Area general (paso 3):** Se selecciona la region completa que incluye los "
+    "grifos, las manijas y el area donde se sirven las cervezas. Esta es la zona "
+    "que el modelo YOLO analiza en detalle.\n"
+    "- **Manijas de cada grifo (pasos 4 y 5):** Se marcan especificamente las manijas "
+    "de Tap A y Tap B dentro de la region recortada. Esto permite identificar con "
+    "precision cual grifo esta sirviendo en cada momento.\n\n"
+    "Con estas cinco regiones el sistema tiene control completo de la posicion "
+    "de cada elemento y puede funcionar correctamente con distintas camaras y angulos."
+)
+
+if "show_help" not in st.session_state:
+    st.session_state.show_help = True
+
+if st.button("Ayuda", key="help_button"):
+    st.session_state.show_help = True
+
+if st.session_state.show_help:
+    with st.container():
+        st.info(_HELP_TEXT)
+        if st.button("Cerrar", key="close_help"):
+            st.session_state.show_help = False
+            st.rerun()
+
+# Check backend connectivity before rendering the app
+try:
+    list_videos()
+except BackendUnavailable:
+    st.error(
+        "**Backend no disponible** — no se puede conectar al servidor API. "
+        "Asegurate de que el backend este corriendo e intenta de nuevo."
+    )
+    if st.button("Reintentar conexion"):
+        st.rerun()
+    st.stop()
+
+tab_upload, tab_dashboard = st.tabs(["Subir y Procesar", "Panel"])
 
 # --- Tab 1: Upload & Process ---
 with tab_upload:
+    if st.button("Actualizar", key="refresh_upload"):
+        st.rerun()
+
     # Recent videos
     recent = list_videos()[:5]
     if recent:
-        st.caption("Recent videos")
+        st.caption("Videos recientes")
         for v in recent:
             status_icon = {
                 "completed": "✅",
@@ -51,25 +246,27 @@ with tab_upload:
         restaurant_list = rest_data.get("restaurants", [])
         cameras_map = rest_data.get("cameras", {})
 
-        ADD_NEW = "➕ Add new..."
+        ADD_NEW = "➕ Agregar nuevo..."
         restaurant_name = None
         camera_id = None
 
         # --- Restaurant picker ---
         if st.session_state.get("new_restaurant_confirmed"):
             restaurant_name = st.session_state.new_restaurant_confirmed
-            st.text_input("Restaurant", value=restaurant_name, disabled=True)
-            if st.button("Change restaurant", key="change_rest"):
+            st.text_input("Restaurante", value=restaurant_name, disabled=True)
+            if st.button("Cambiar restaurante", key="change_rest"):
                 del st.session_state.new_restaurant_confirmed
                 st.session_state.pop("new_camera_confirmed", None)
                 st.rerun()
         else:
             rest_options = restaurant_list + [ADD_NEW]
             selected_rest = st.selectbox(
-                "Restaurant", rest_options, index=None, placeholder="Select restaurant..."
+                "Restaurante", rest_options, index=None, placeholder="Seleccionar restaurante..."
             )
             if selected_rest == ADD_NEW:
-                new_rest = st.text_input("New restaurant name", placeholder="e.g. mikes_pub")
+                new_rest = st.text_input(
+                    "Nombre del nuevo restaurante", placeholder="ej. mikes_pub"
+                )
                 if new_rest:
                     st.session_state.new_restaurant_confirmed = new_rest
                     st.rerun()
@@ -80,17 +277,17 @@ with tab_upload:
         if restaurant_name:
             if st.session_state.get("new_camera_confirmed"):
                 camera_id = st.session_state.new_camera_confirmed
-                st.text_input("Camera ID", value=camera_id, disabled=True)
-                if st.button("Change camera", key="change_cam"):
+                st.text_input("ID de camara", value=camera_id, disabled=True)
+                if st.button("Cambiar camara", key="change_cam"):
                     del st.session_state.new_camera_confirmed
                     st.rerun()
             else:
                 cam_options = cameras_map.get(restaurant_name, []) + [ADD_NEW]
                 selected_cam = st.selectbox(
-                    "Camera ID", cam_options, index=None, placeholder="Select camera..."
+                    "ID de camara", cam_options, index=None, placeholder="Seleccionar camara..."
                 )
                 if selected_cam == ADD_NEW:
-                    new_cam = st.text_input("New camera ID", placeholder="e.g. cam1")
+                    new_cam = st.text_input("Nuevo ID de camara", placeholder="ej. cam1")
                     if new_cam:
                         st.session_state.new_camera_confirmed = new_cam
                         st.rerun()
@@ -103,13 +300,13 @@ with tab_upload:
         if restaurant_name and camera_id:
             roi_check = check_roi_config(restaurant_name, camera_id)
             if roi_check["exists"]:
-                preview_roi = st.checkbox("Preview ROI on first frame before processing")
+                preview_roi = st.checkbox("Previsualizar ROI en el primer frame antes de procesar")
                 roi_config_data = roi_check.get("roi_data")
 
-        uploaded_file = st.file_uploader("Upload a video", type=["mp4", "mov"])
+        uploaded_file = st.file_uploader("Subir un video", type=["mp4", "mov"])
 
         if uploaded_file and uploaded_file.name != st.session_state.get("last_uploaded_name"):
-            with st.spinner("Uploading..."):
+            with st.spinner("Subiendo..."):
                 result = upload_video(
                     uploaded_file.name,
                     uploaded_file.getvalue(),
@@ -133,7 +330,7 @@ with tab_upload:
                 st.session_state.roi_selection_active = True
                 st.session_state.roi_restaurant = restaurant_name
                 st.session_state.roi_camera = camera_id
-                st.toast(f"Uploaded: {result['original_name']} — ROI config needed")
+                st.toast(f"Subido: {result['original_name']} — se necesita configurar ROI")
                 st.rerun()
             elif preview_roi:
                 # Enter preview confirmation mode
@@ -147,11 +344,11 @@ with tab_upload:
                 any_processing = any(v["status"].startswith("processing") for v in list_videos())
                 if any_processing:
                     st.toast(
-                        f"Uploaded: {result['original_name']} — queued (another video is processing)"
+                        f"Subido: {result['original_name']} — en cola (otro video se esta procesando)"
                     )
                 else:
                     process_video(result["id"])
-                    st.toast(f"Uploaded & processing: {result['original_name']}")
+                    st.toast(f"Subido y procesando: {result['original_name']}")
                 st.rerun()
 
     # ROI preview confirmation — show first frame with boxes, confirm before processing
@@ -165,7 +362,7 @@ with tab_upload:
         camera_id = st.session_state.roi_confirm_camera
         roi_data = st.session_state.roi_confirm_data
 
-        st.subheader(f"ROI Preview: {restaurant_name} / {camera_id}")
+        st.subheader(f"Vista previa ROI: {restaurant_name} / {camera_id}")
 
         # Always re-fetch ROI data from backend to ensure it's available
         if restaurant_name and camera_id:
@@ -216,15 +413,15 @@ with tab_upload:
                             draw.rectangle([bx1, by1, bx2, by2], outline=colors[i], width=2)
                             draw.text((bx1 + 4, by1 + 4), labels[i], fill=colors[i])
 
-                st.image(frame_image, caption="First frame with ROI overlay", width="stretch")
+                st.image(frame_image, caption="Primer frame con ROI superpuesto", width="stretch")
             except Exception as e:
-                st.error(f"Could not load frame preview: {e}")
+                st.error(f"No se pudo cargar la vista previa: {e}")
         else:
-            st.warning("ROI config data not available. Try re-uploading.")
+            st.warning("Datos de configuracion ROI no disponibles. Intenta subir de nuevo.")
 
         col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("Confirm & Process", type="primary"):
+            if st.button("Confirmar y Procesar", type="primary"):
                 for k in [
                     "roi_confirm_active",
                     "roi_confirm_data",
@@ -234,13 +431,13 @@ with tab_upload:
                     st.session_state.pop(k, None)
                 any_processing = any(v["status"].startswith("processing") for v in list_videos())
                 if any_processing:
-                    st.toast("Queued — another video is processing")
+                    st.toast("En cola — otro video se esta procesando")
                 else:
                     process_video(video_id)
-                    st.toast("Processing started")
+                    st.toast("Procesamiento iniciado")
                 st.rerun()
         with col2:
-            if st.button("Re-draw ROI", key="redraw_roi"):
+            if st.button("Redibujar ROI", key="redraw_roi"):
                 # Enter ROI wizard — will overwrite the config on save
                 st.session_state.roi_selection_active = True
                 st.session_state.roi_restaurant = restaurant_name
@@ -254,7 +451,7 @@ with tab_upload:
                     st.session_state.pop(k, None)
                 st.rerun()
         with col3:
-            if st.button("Cancel", key="cancel_confirm"):
+            if st.button("Cancelar", key="cancel_confirm"):
                 for k in [
                     "roi_confirm_active",
                     "roi_confirm_data",
@@ -276,7 +473,7 @@ with tab_upload:
         camera_id = st.session_state.roi_camera
         roi_step = st.session_state.get("roi_step", 1)
 
-        st.subheader(f"ROI Setup: {restaurant_name} / {camera_id}")
+        st.subheader(f"Configuracion ROI: {restaurant_name} / {camera_id}")
 
         # Load frame once and cache in session
         if "roi_frame_bytes" not in st.session_state:
@@ -303,10 +500,12 @@ with tab_upload:
 
         # ── Step 1: Select FILTER ROI 1 on full frame ──
         if roi_step == 1:
-            st.markdown("**Step 1 of 5** — Select **Filter Region 1** (TAP A handle area)")
+            st.markdown(
+                "**Paso 1 de 5** — Seleccionar **Region de Filtro 1** (area del grifo TAP A)"
+            )
             st.info(
-                "Drag the red box to tightly cover the TAP A handle. "
-                "This small region is used for fast activity detection on long videos."
+                "Arrastra el recuadro rojo para cubrir ajustadamente el grifo TAP A. "
+                "Esta pequena region se usa para deteccion rapida de actividad en videos largos."
             )
 
             _, filter_box_1 = st_cropper(
@@ -331,20 +530,22 @@ with tab_upload:
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("Confirm & Continue", type="primary", key="confirm_f1"):
+                    if st.button("Confirmar y Continuar", type="primary", key="confirm_f1"):
                         st.session_state.roi_filter_1 = roi_f1
                         st.session_state.roi_step = 2
                         st.rerun()
                 with col2:
-                    if st.button("Cancel", key="cancel_step1"):
+                    if st.button("Cancelar", key="cancel_step1"):
                         _cancel_roi()
 
         # ── Step 2: Select FILTER ROI 2 on full frame ──
         elif roi_step == 2:
-            st.markdown("**Step 2 of 5** — Select **Filter Region 2** (TAP B handle area)")
+            st.markdown(
+                "**Paso 2 de 5** — Seleccionar **Region de Filtro 2** (area del grifo TAP B)"
+            )
             st.info(
-                "Drag the red box to tightly cover the TAP B handle. "
-                "This small region is used for fast activity detection on long videos."
+                "Arrastra el recuadro rojo para cubrir ajustadamente el grifo TAP B. "
+                "Esta pequena region se usa para deteccion rapida de actividad en videos largos."
             )
 
             _, filter_box_2 = st_cropper(
@@ -369,19 +570,23 @@ with tab_upload:
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("Confirm & Continue", type="primary", key="confirm_f2"):
+                    if st.button("Confirmar y Continuar", type="primary", key="confirm_f2"):
                         st.session_state.roi_filter_2 = roi_f2
                         st.session_state.roi_step = 3
                         st.rerun()
                 with col2:
-                    if st.button("Back to Filter ROI 1", key="back_step2"):
+                    if st.button("Volver a Filtro ROI 1", key="back_step2"):
                         st.session_state.roi_step = 1
                         st.rerun()
 
         # ── Step 3: Select crop region on full frame ──
         elif roi_step == 3:
-            st.markdown("**Step 3 of 5** — Select the **tap area** (crop region for YOLO)")
-            st.info("Drag the orange box to cover the area where taps and cups are visible.")
+            st.markdown(
+                "**Paso 3 de 5** — Seleccionar el **area de grifos** (region de recorte para YOLO)"
+            )
+            st.info(
+                "Arrastra el recuadro naranja para cubrir el area donde se ven los grifos y vasos."
+            )
 
             cropped_img, crop_box = st_cropper(
                 frame_image,
@@ -401,7 +606,7 @@ with tab_upload:
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("Confirm Crop & Continue", type="primary"):
+                    if st.button("Confirmar Recorte y Continuar", type="primary"):
                         st.session_state.roi_tap_roi = tap_roi
                         crop_l = int(crop_box["left"])
                         crop_t = int(crop_box["top"])
@@ -414,14 +619,14 @@ with tab_upload:
                         st.session_state.roi_step = 4
                         st.rerun()
                 with col2:
-                    if st.button("Back to Filter ROI 2", key="back_step3"):
+                    if st.button("Volver a Filtro ROI 2", key="back_step3"):
                         st.session_state.roi_step = 2
                         st.rerun()
 
         # ── Step 4: Select TAP A on cropped image ──
         elif roi_step == 4:
-            st.markdown("**Step 4 of 5** — Select **TAP A** handle on cropped image")
-            st.info("Drag the blue box to cover the TAP A (left tap) handle.")
+            st.markdown("**Paso 4 de 5** — Seleccionar grifo **TAP A** en la imagen recortada")
+            st.info("Arrastra el recuadro azul para cubrir el grifo TAP A (grifo izquierdo).")
 
             cropped_img = Image.open(io.BytesIO(st.session_state.roi_cropped_bytes))
 
@@ -443,19 +648,19 @@ with tab_upload:
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("Confirm TAP A & Continue", type="primary"):
+                    if st.button("Confirmar TAP A y Continuar", type="primary"):
                         st.session_state.roi_tap_a_bbox = bbox_a
                         st.session_state.roi_step = 5
                         st.rerun()
                 with col2:
-                    if st.button("Back to Crop", key="back_step4"):
+                    if st.button("Volver a Recorte", key="back_step4"):
                         st.session_state.roi_step = 3
                         st.rerun()
 
         # ── Step 5: Select TAP B on cropped image ──
         elif roi_step == 5:
-            st.markdown("**Step 5 of 5** — Select **TAP B** handle on cropped image")
-            st.info("Drag the green box to cover the TAP B (right tap) handle.")
+            st.markdown("**Paso 5 de 5** — Seleccionar grifo **TAP B** en la imagen recortada")
+            st.info("Arrastra el recuadro verde para cubrir el grifo TAP B (grifo derecho).")
 
             cropped_img = Image.open(io.BytesIO(st.session_state.roi_cropped_bytes))
 
@@ -477,7 +682,7 @@ with tab_upload:
 
                 # Show summary before saving
                 st.divider()
-                st.markdown("**Summary**")
+                st.markdown("**Resumen**")
                 st.caption(f"Filter ROI 1: {st.session_state.roi_filter_1}")
                 st.caption(f"Filter ROI 2: {st.session_state.roi_filter_2}")
                 st.caption(f"Crop ROI: {st.session_state.roi_tap_roi}")
@@ -486,7 +691,7 @@ with tab_upload:
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("Save ROI & Start Processing", type="primary"):
+                    if st.button("Guardar ROI e Iniciar Procesamiento", type="primary"):
                         roi_data = {
                             "simple": {
                                 "roi_1": st.session_state.roi_filter_1,
@@ -501,7 +706,7 @@ with tab_upload:
                             },
                         }
                         save_roi_config(restaurant_name, camera_id, roi_data)
-                        st.toast(f"ROI config saved for {restaurant_name}/{camera_id}")
+                        st.toast(f"Configuracion ROI guardada para {restaurant_name}/{camera_id}")
 
                         # Clear all ROI selection state
                         for k in [
@@ -524,10 +729,10 @@ with tab_upload:
                         )
                         if not any_processing:
                             process_video(video_id)
-                            st.toast("Processing started")
+                            st.toast("Procesamiento iniciado")
                         st.rerun()
                 with col2:
-                    if st.button("Back to TAP A", key="back_step5"):
+                    if st.button("Volver a TAP A", key="back_step5"):
                         st.session_state.roi_step = 4
                         st.rerun()
 
@@ -543,37 +748,29 @@ with tab_upload:
         if status["status"] == "pending":
             any_processing = any(v["status"].startswith("processing") for v in list_videos())
             if any_processing:
-                st.warning(
-                    f"Queued: {status['original_name']} — waiting for another video to finish"
-                )
-                if st.button("Refresh Status"):
+                st.warning(f"En cola: {status['original_name']} — esperando que termine otro video")
+                if st.button("Actualizar Estado", key="refresh_pending"):
                     st.rerun()
-                # Auto-poll: check every 10s so queued videos start automatically
-                time.sleep(10)
-                st.rerun()
             else:
                 process_video(video_id)
-                st.toast(f"Processing started: {status['original_name']}")
+                st.toast(f"Procesamiento iniciado: {status['original_name']}")
                 st.rerun()
 
         elif status["status"].startswith("processing"):
             stage_labels = {
-                "processing": "Processing (YOLO)...",
-                "processing_filter": "Stage 1/3: Running activity filter...",
-                "processing_clips": "Stage 2/3: Extracting activity clips...",
-                "processing_yolo": "Stage 3/3: Running YOLO on clips...",
+                "processing": "Procesando (YOLO)...",
+                "processing_filter": "Etapa 1/3: Ejecutando filtro de actividad...",
+                "processing_clips": "Etapa 2/3: Extrayendo clips de actividad...",
+                "processing_yolo": "Etapa 3/3: Ejecutando YOLO en clips...",
             }
-            label = stage_labels.get(status["status"], "Processing...")
+            label = stage_labels.get(status["status"], "Procesando...")
             st.warning(f"{label} — {status['original_name']}")
-            if st.button("Refresh Status"):
+            if st.button("Actualizar Estado", key="refresh_processing"):
                 st.rerun()
-            # Auto-poll: check every 10s for completion
-            time.sleep(10)
-            st.rerun()
 
         elif status["status"] in ("completed", "error"):
             if status["status"] == "completed":
-                st.success(f"Completed: {status['original_name']}")
+                st.success(f"Completado: {status['original_name']}")
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Tap A", status["tap_a_count"])
                 c2.metric("Tap B", status["tap_b_count"])
@@ -582,23 +779,25 @@ with tab_upload:
                 # Show timing breakdown if filter was used
                 if status.get("num_clips") is not None:
                     st.caption(
-                        f"Filter: {status.get('filter_time_s', 0):.1f}s | "
+                        f"Filtro: {status.get('filter_time_s', 0):.1f}s | "
                         f"Clips: {status.get('num_clips', 0)} "
-                        f"({status.get('filtered_duration_s', 0):.0f}s of "
-                        f"{status.get('duration_sec', 0):.0f}s video) | "
+                        f"({status.get('filtered_duration_s', 0):.0f}s de "
+                        f"{status.get('duration_sec', 0):.0f}s de video) | "
                         f"YOLO: {status.get('yolo_time_s', 0):.1f}s"
                     )
                 elif status.get("yolo_time_s"):
-                    st.caption(f"YOLO processing: {status['yolo_time_s']:.1f}s")
+                    st.caption(f"Procesamiento YOLO: {status['yolo_time_s']:.1f}s")
 
                 if status["events"]:
-                    st.subheader("Pour Events")
+                    st.subheader("Eventos de Servido")
                     events_df = pd.DataFrame(status["events"])
                     events_df = events_df[["tap", "timestamp_start", "timestamp_end", "count"]]
-                    events_df.columns = ["Tap", "Start (s)", "End (s)", "Count"]
+                    events_df.columns = ["Grifo", "Inicio (s)", "Fin (s)", "Cantidad"]
                     st.dataframe(events_df, width="stretch")
             else:
-                st.error(f"Processing failed: {status.get('error_message', 'Unknown error')}")
+                st.error(
+                    f"Procesamiento fallido: {status.get('error_message', 'Error desconocido')}"
+                )
 
             # Auto-start next pending video in queue
             all_videos = list_videos()
@@ -606,12 +805,12 @@ with tab_upload:
             if next_pending:
                 st.session_state.active_video_id = next_pending["id"]
                 process_video(next_pending["id"])
-                st.toast(f"Processing next: {next_pending['original_name']}")
+                st.toast(f"Procesando siguiente: {next_pending['original_name']}")
                 st.rerun()
 
 # --- Tab 2: Dashboard ---
 with tab_dashboard:
-    if st.button("Refresh", key="refresh_dashboard"):
+    if st.button("Actualizar", key="refresh_dashboard"):
         st.rerun()
 
     # Global summary
@@ -619,8 +818,8 @@ with tab_dashboard:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Tap A Total", summary["tap_a_total"])
     c2.metric("Tap B Total", summary["tap_b_total"])
-    c3.metric("Grand Total", summary["grand_total"])
-    c4.metric("Videos Processed", summary["video_count"])
+    c3.metric("Total General", summary["grand_total"])
+    c4.metric("Videos Procesados", summary["video_count"])
 
     st.divider()
 
@@ -646,17 +845,17 @@ with tab_dashboard:
                     if detail["events"]:
                         events_df = pd.DataFrame(detail["events"])
                         events_df = events_df[["tap", "timestamp_start", "timestamp_end", "count"]]
-                        events_df.columns = ["Tap", "Start (s)", "End (s)", "Count"]
+                        events_df.columns = ["Grifo", "Inicio (s)", "Fin (s)", "Cantidad"]
                         st.dataframe(events_df, width="stretch")
                 elif video["status"] == "error":
                     detail = get_video_status(video["id"])
-                    st.error(detail.get("error_message", "Unknown error"))
+                    st.error(detail.get("error_message", "Error desconocido"))
                 else:
-                    st.info(f"Status: {label}")
+                    st.info(f"Estado: {label}")
 
-                if st.button("Delete", key=f"del_{video['id']}"):
+                if st.button("Eliminar", key=f"del_{video['id']}"):
                     delete_video(video["id"])
-                    st.toast(f"Deleted: {name}")
+                    st.toast(f"Eliminado: {name}")
                     st.rerun()
     else:
-        st.info("No videos uploaded yet.")
+        st.info("No hay videos subidos aun.")
