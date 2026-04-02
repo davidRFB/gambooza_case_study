@@ -308,3 +308,21 @@ data/                  # Videos, models, DB, ROI configs, results
 tests/                 # pytest suite (59 tests)
 scripts/               # CLI tools for running pipeline stages independently
 ```
+
+---
+
+## Final Considerations
+
+### Execution Time
+
+The YOLO tracking stage processes approximately 2000 frames in around 5 minutes. SAM3, being significantly more computationally expensive due to instance segmentation with memory propagation, takes roughly 10 minutes for the same 2000 frames. While these times are not prohibitive for short videos, they add up quickly for longer recordings. The pipeline already skips SAM3 entirely when YOLO does not detect any moving cups (no pour events found), but further optimization is still needed.
+
+For long videos, the SimpleDetector pre-filter breaks the recording into activity clips (typically around 15 clips for a 2-hour video). Each clip is processed independently through the full YOLO+SAM3 pipeline, so total processing time scales with the amount of actual tap activity rather than total video length. Still, a busy 2-hour recording with many activity windows can result in substantial cumulative processing time.
+
+### Fine-Tuning YOLO for Handle Detection
+
+A promising alternative to SAM3 is to fine-tune a YOLO model on annotated images of tap handles in different states (resting, being pulled, mid-pour). This would allow a single YOLO-World model to detect and track **person**, **cup**, and **handle** simultaneously in one pass, eliminating the need for a separate SAM3 stage entirely. This approach would significantly reduce processing time and pipeline complexity, since tap assignment could be derived directly from handle state changes detected by YOLO rather than requiring a second GPU-intensive segmentation model.
+
+### Relink Parameter Optimization
+
+The relink stage involves multiple parameters (overlap threshold, interpolation gap, movement threshold, stationary detection) that control how fragmented tracks are merged and how pour events are classified. These parameters interact with camera-specific factors: the position and angle of the camera, the video resolution, lighting conditions, and how often predictions disappear due to occlusions (people's arms crossing the frame, lighting changes, etc.). The interpolation of missing positions for temporarily lost tracks is particularly sensitive to these conditions. Per-deployment tuning of relink parameters, informed by the specific camera setup and resolution, offers significant room for improving accuracy.

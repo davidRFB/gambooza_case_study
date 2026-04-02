@@ -308,3 +308,21 @@ data/                  # Videos, modelos, BD, configs ROI, resultados
 tests/                 # Suite pytest (59 tests)
 scripts/               # Herramientas CLI para ejecutar etapas del pipeline independientemente
 ```
+
+---
+
+## Consideraciones Finales
+
+### Tiempo de Ejecucion
+
+La etapa de tracking YOLO procesa aproximadamente 2000 cuadros en alrededor de 5 minutos. SAM3, al ser significativamente mas costoso computacionalmente debido a la segmentacion de instancias con propagacion de memoria, tarda aproximadamente 10 minutos para los mismos 2000 cuadros. Si bien estos tiempos no son prohibitivos para videos cortos, se acumulan rapidamente en grabaciones mas largas. El pipeline ya omite SAM3 por completo cuando YOLO no detecta vasos en movimiento (sin eventos de servido encontrados), pero aun se necesita mayor optimizacion.
+
+Para videos largos, el pre-filtro SimpleDetector divide la grabacion en clips de actividad (tipicamente alrededor de 15 clips para un video de 2 horas). Cada clip se procesa de forma independiente a traves del pipeline completo YOLO+SAM3, por lo que el tiempo total de procesamiento escala con la cantidad de actividad real en los grifos en lugar de la duracion total del video. Aun asi, una grabacion de 2 horas con muchas ventanas de actividad puede resultar en un tiempo de procesamiento acumulado considerable.
+
+### Fine-Tuning de YOLO para Deteccion de Manijas
+
+Una alternativa prometedora a SAM3 es hacer fine-tuning de un modelo YOLO con imagenes anotadas de manijas de grifo en diferentes estados (en reposo, siendo tiradas, a mitad de servido). Esto permitiria que un unico modelo YOLO-World detecte y rastree **persona**, **vaso** y **manija** simultaneamente en una sola pasada, eliminando la necesidad de una etapa separada de SAM3 por completo. Este enfoque reduciria significativamente el tiempo de procesamiento y la complejidad del pipeline, ya que la asignacion de grifo podria derivarse directamente de los cambios de estado de la manija detectados por YOLO, en lugar de requerir un segundo modelo de segmentacion intensivo en GPU.
+
+### Optimizacion de Parametros de Relink
+
+La etapa de relink involucra multiples parametros (superposicion, brecha de interpolacion, umbral de movimiento) que controlan como se fusionan los tracks fragmentados en caso de que el mismo vaso tenga IDs diferentes. Estos parametros interactuan con factores especificos de la camara: la posicion y angulo de la camara, la resolucion del video, las condiciones de iluminacion y la frecuencia con la que las predicciones desaparecen debido a oclusiones (brazos de personas cruzando el cuadro, cambios de iluminacion, etc.). La interpolacion de posiciones faltantes para tracks temporalmente perdidos es particularmente sensible a estas condiciones. El ajuste por despliegue de los parametros de relink, informado por la configuracion especifica de la camara y la resolucion, ofrece un margen significativo para mejorar la precision.
