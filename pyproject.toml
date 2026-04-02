@@ -17,6 +17,7 @@ dependencies = [
     "pyyaml",
     "streamlit",
     "requests",
+    "streamlit-cropper>=0.3.1",
 ]
 
 

@@ -49,6 +49,8 @@ def get_counts(
                 video_id=video.id,
                 original_name=video.original_name,
                 upload_date=video.upload_date,
+                restaurant_name=video.restaurant_name,
+                camera_id=video.camera_id,
                 tap_a=tap_a,
                 tap_b=tap_b,
                 total=tap_a + tap_b,

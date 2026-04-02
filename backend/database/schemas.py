@@ -12,6 +12,8 @@ class VideoUploadResponse(BaseModel):
     filename: str
     original_name: str
     status: str
+    restaurant_name: str | None = None
+    camera_id: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -22,6 +24,8 @@ class VideoListItem(BaseModel):
     upload_date: datetime
     status: str
     ml_approach: str | None
+    restaurant_name: str | None = None
+    camera_id: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -45,6 +49,8 @@ class VideoStatusResponse(BaseModel):
     original_name: str
     upload_date: datetime
     status: str
+    restaurant_name: str | None = None
+    camera_id: str | None = None
     duration_sec: float | None
     error_message: str | None
     ml_approach: str | None
@@ -64,6 +70,8 @@ class CountResult(BaseModel):
     video_id: int
     original_name: str
     upload_date: datetime
+    restaurant_name: str | None = None
+    camera_id: str | None = None
     tap_a: int
     tap_b: int
     total: int

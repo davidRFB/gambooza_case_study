@@ -40,6 +40,8 @@ def test_videos_columns(db):
         "processing_started_at",
         "processing_finished_at",
         "output_dir",
+        "restaurant_name",
+        "camera_id",
     }
     assert expected == cols
 

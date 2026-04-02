@@ -30,6 +30,8 @@ class Video(Base):
     processing_started_at = Column(DateTime, nullable=True)
     processing_finished_at = Column(DateTime, nullable=True)
     output_dir = Column(String, nullable=True)  # path to pipeline intermediate files
+    restaurant_name = Column(String, nullable=True)  # e.g. "cerveceria_centro"
+    camera_id = Column(String, nullable=True)  # e.g. "cam1"
 
     tap_events = relationship(
         "TapEvent",

@@ -13,3 +13,5 @@ python-multipart
 pyyaml
 pytest
 streamlit
+streamlit-cropper
+requests

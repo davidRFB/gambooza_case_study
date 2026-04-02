@@ -127,3 +127,99 @@ def test_delete_video(client):
 def test_delete_not_found(client):
     resp = client.delete("/api/videos/9999")
     assert resp.status_code == 404
+
+
+def test_upload_with_restaurant_camera(client):
+    name, file, ct = _make_fake_mp4()
+    resp = client.post(
+        "/api/videos/upload",
+        files={"file": (name, file, ct)},
+        params={"restaurant_name": "mikes_pub", "camera_id": "cam1"},
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["restaurant_name"] == "mikes_pub"
+    assert data["camera_id"] == "cam1"
+
+
+def test_upload_without_restaurant_camera(client):
+    name, file, ct = _make_fake_mp4()
+    resp = client.post("/api/videos/upload", files={"file": (name, file, ct)})
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["restaurant_name"] is None
+    assert data["camera_id"] is None
+
+
+def test_roi_config_exists_false(client):
+    resp = client.get(
+        "/api/videos/roi-config-exists",
+        params={"restaurant_name": "nonexistent", "camera_id": "cam99"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["exists"] is False
+    assert data["config_name"] == "nonexistent_cam99"
+
+
+def test_restaurants_list(client):
+    # Upload a video with restaurant+camera
+    name, file, ct = _make_fake_mp4()
+    client.post(
+        "/api/videos/upload",
+        files={"file": (name, file, ct)},
+        params={"restaurant_name": "test_rest", "camera_id": "cam1"},
+    )
+
+    resp = client.get("/api/videos/restaurants")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "test_rest" in data["restaurants"]
+    assert "cam1" in data["cameras"]["test_rest"]
+
+
+def test_save_roi_config(client, tmp_path):
+    from unittest.mock import patch
+
+    # Patch at the config module level (where it's imported from)
+    with patch("backend.config.ROI_CONFIGS_DIR", tmp_path):
+        resp = client.post(
+            "/api/videos/roi-config",
+            json={
+                "restaurant_name": "testrest",
+                "camera_id": "cam1",
+                "roi_data": {
+                    "yolo": {
+                        "tap_roi": [0.1, 0.2, 0.3, 0.4],
+                        "sam3_tap_bboxes": [[10, 20, 30, 40], [50, 60, 70, 80]],
+                    }
+                },
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["config_name"] == "testrest_cam1"
+
+
+def test_save_roi_config_bad_name(client):
+    resp = client.post(
+        "/api/videos/roi-config",
+        json={
+            "restaurant_name": "bad/name",
+            "camera_id": "cam1",
+            "roi_data": {"yolo": {"tap_roi": [], "sam3_tap_bboxes": []}},
+        },
+    )
+    assert resp.status_code == 422
+
+
+def test_save_roi_config_missing_yolo(client):
+    resp = client.post(
+        "/api/videos/roi-config",
+        json={
+            "restaurant_name": "test",
+            "camera_id": "cam1",
+            "roi_data": {"simple": {}},
+        },
+    )
+    assert resp.status_code == 422

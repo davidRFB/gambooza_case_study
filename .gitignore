@@ -1,6 +1,7 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 problem.txt
+*.db
 *.py[codz]
 *$py.class
 *.mp4

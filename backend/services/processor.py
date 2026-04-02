@@ -9,23 +9,32 @@ from pathlib import Path
 import yaml
 from sqlalchemy.orm import Session
 
-from backend.config import PROJECT_ROOT, RESULTS_DIR, ROI_CONFIGS_DIR, UPLOADS_DIR, YOLO_BASE_CONFIG
+from backend.config import PROJECT_ROOT, RESULTS_DIR, ROI_CONFIGS_DIR, YOLO_BASE_CONFIG
 from backend.database.models import TapEvent as TapEventModel
 from backend.database.models import Video
 
 logger = logging.getLogger(__name__)
 
 
-def process_video(video_id: int, db: Session, roi_config: str = "default"):
+def _resolve_roi_config_name(restaurant_name: str | None, camera_id: str | None) -> str | None:
+    """Derive ROI config filename from restaurant+camera. Returns None if not found."""
+    if restaurant_name and camera_id:
+        candidate = f"{restaurant_name}_{camera_id}"
+        path = ROI_CONFIGS_DIR / f"{candidate}.json"
+        if path.exists():
+            return candidate
+    return None
+
+
+def process_video(video_id: int, db: Session):
     """Run the YOLO pipeline on a video and save tap events to the DB.
 
     Parameters
     ----------
     video_id : DB id of the video to process
     db : SQLAlchemy session
-    roi_config : name of ROI config file in data/roi_configs/ (without .json)
     """
-    logger.info("process_video started: video_id=%d, roi_config=%s", video_id, roi_config)
+    logger.info("process_video started: video_id=%d", video_id)
 
     video = db.query(Video).filter(Video.id == video_id).first()
     if not video:
@@ -38,17 +47,29 @@ def process_video(video_id: int, db: Session, roi_config: str = "default"):
     logger.info("Video %d status -> processing", video_id)
 
     try:
-        video_path = UPLOADS_DIR / video.filename
+        video_dir = RESULTS_DIR / f"web_{video_id}"
+        video_path = video_dir / video.filename
         if not video_path.exists():
             raise FileNotFoundError(f"Video file not found: {video_path}")
 
-        # Load ROI config
+        # Resolve ROI config from restaurant + camera (mandatory)
+        roi_config = _resolve_roi_config_name(video.restaurant_name, video.camera_id)
+        if roi_config is None:
+            raise ValueError(
+                f"No ROI config found for restaurant='{video.restaurant_name}', "
+                f"camera='{video.camera_id}'. Create one before processing."
+            )
         roi = _load_roi_config(roi_config)
         logger.info("ROI config '%s' loaded", roi_config)
 
         # Build temp YOLO config and run pipeline
         pour_events = _run_yolo_pipeline(video_path, video_id, roi)
         logger.info("Pipeline returned %d pour events", len(pour_events))
+
+        # Clear any existing tap events from previous runs
+        old_count = db.query(TapEventModel).filter(TapEventModel.video_id == video_id).delete()
+        if old_count:
+            logger.info("Cleared %d old tap events for video %d", old_count, video_id)
 
         # Map results to DB
         tap_events_db = _map_pour_events(video_id, pour_events)

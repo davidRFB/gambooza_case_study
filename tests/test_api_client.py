@@ -4,11 +4,15 @@ from unittest.mock import MagicMock, patch
 
 from frontend.utils.api_client import (
     BACKEND_URL,
+    check_roi_config,
     delete_video,
     get_counts_summary,
+    get_restaurants,
+    get_video_frame,
     get_video_status,
     list_videos,
     process_video,
+    save_roi_config,
     upload_video,
 )
 
@@ -171,3 +175,67 @@ def test_delete_video_not_found(mock_delete):
     result = delete_video(999)
 
     assert result is False
+
+
+@patch("frontend.utils.api_client.requests.post")
+def test_upload_video_with_restaurant_camera(mock_post):
+    fake_data = {
+        "id": 1,
+        "filename": "abc_test.mp4",
+        "original_name": "test.mp4",
+        "status": "pending",
+        "restaurant_name": "mikes_pub",
+        "camera_id": "cam1",
+    }
+    mock_post.return_value = _mock_response(fake_data)
+
+    result = upload_video("test.mp4", b"data", restaurant_name="mikes_pub", camera_id="cam1")
+
+    call_kwargs = mock_post.call_args
+    assert call_kwargs.kwargs["params"] == {"restaurant_name": "mikes_pub", "camera_id": "cam1"}
+    assert result["restaurant_name"] == "mikes_pub"
+
+
+@patch("frontend.utils.api_client.requests.get")
+def test_get_restaurants(mock_get):
+    fake_data = {"restaurants": ["mikes_pub"], "cameras": {"mikes_pub": ["cam1"]}}
+    mock_get.return_value = _mock_response(fake_data)
+
+    result = get_restaurants()
+
+    mock_get.assert_called_once_with(f"{BACKEND_URL}/api/videos/restaurants")
+    assert "mikes_pub" in result["restaurants"]
+
+
+@patch("frontend.utils.api_client.requests.get")
+def test_check_roi_config(mock_get):
+    fake_data = {"exists": True, "config_name": "mikes_pub_cam1"}
+    mock_get.return_value = _mock_response(fake_data)
+
+    result = check_roi_config("mikes_pub", "cam1")
+
+    assert result["exists"] is True
+
+
+@patch("frontend.utils.api_client.requests.get")
+def test_get_video_frame(mock_get):
+    resp = MagicMock()
+    resp.content = b"\xff\xd8\xff\xe0"  # JPEG header bytes
+    resp.raise_for_status.return_value = None
+    mock_get.return_value = resp
+
+    result = get_video_frame(1)
+
+    mock_get.assert_called_once_with(f"{BACKEND_URL}/api/videos/1/frame")
+    assert result == b"\xff\xd8\xff\xe0"
+
+
+@patch("frontend.utils.api_client.requests.post")
+def test_save_roi_config(mock_post):
+    fake_data = {"config_name": "mikes_pub_cam1", "path": "/some/path"}
+    mock_post.return_value = _mock_response(fake_data)
+
+    roi_data = {"yolo": {"tap_roi": [0.1, 0.2, 0.3, 0.4], "sam3_tap_bboxes": [[1, 2, 3, 4]]}}
+    result = save_roi_config("mikes_pub", "cam1", roi_data)
+
+    assert result["config_name"] == "mikes_pub_cam1"

@@ -8,15 +8,33 @@ import pytest
 import yaml
 
 from backend.config import RESULTS_DIR, ROI_CONFIGS_DIR
-from backend.services.processor import _load_roi_config, _map_pour_events, _run_yolo_pipeline
+from backend.services.processor import (
+    _load_roi_config,
+    _map_pour_events,
+    _resolve_roi_config_name,
+    _run_yolo_pipeline,
+)
 
 
-def test_load_default_roi():
-    roi = _load_roi_config("default")
-    assert "simple" in roi
-    assert "yolo" in roi
-    assert len(roi["yolo"]["tap_roi"]) == 4
-    assert len(roi["yolo"]["sam3_tap_bboxes"]) == 2
+def test_load_roi_config():
+    path = ROI_CONFIGS_DIR / "_test_valid.json"
+    path.write_text(
+        json.dumps(
+            {
+                "yolo": {
+                    "tap_roi": [0.1, 0.2, 0.3, 0.4],
+                    "sam3_tap_bboxes": [[10, 20, 30, 40], [50, 60, 70, 80]],
+                }
+            }
+        )
+    )
+    try:
+        roi = _load_roi_config("_test_valid")
+        assert "yolo" in roi
+        assert len(roi["yolo"]["tap_roi"]) == 4
+        assert len(roi["yolo"]["sam3_tap_bboxes"]) == 2
+    finally:
+        path.unlink()
 
 
 def test_load_roi_not_found():
@@ -36,7 +54,12 @@ def test_load_roi_missing_yolo_section():
 
 def test_run_yolo_pipeline_builds_correct_config():
     """Verify the temp config has the right overrides (mock the actual detector)."""
-    roi = _load_roi_config("default")
+    roi = {
+        "yolo": {
+            "tap_roi": [0.1, 0.2, 0.3, 0.4],
+            "sam3_tap_bboxes": [[10, 20, 30, 40], [50, 60, 70, 80]],
+        }
+    }
 
     fake_result = MagicMock()
     fake_result.pour_events = [{"cup_id": 1, "frame_start": 0, "frame_end": 100}]
@@ -141,3 +164,25 @@ def test_load_roi_missing_yolo_key():
             _load_roi_config("_test_bad2")
     finally:
         path.unlink()
+
+
+def test_resolve_roi_config_with_existing_file():
+    """When a matching config file exists, use it."""
+    path = ROI_CONFIGS_DIR / "testrest_cam1.json"
+    path.write_text(json.dumps({"yolo": {"tap_roi": [], "sam3_tap_bboxes": []}}))
+    try:
+        assert _resolve_roi_config_name("testrest", "cam1") == "testrest_cam1"
+    finally:
+        path.unlink()
+
+
+def test_resolve_roi_config_returns_none_when_missing():
+    """When no matching config file exists, return None."""
+    assert _resolve_roi_config_name("nonexistent", "cam99") is None
+
+
+def test_resolve_roi_config_none_values():
+    """When restaurant or camera is None, return None."""
+    assert _resolve_roi_config_name(None, None) is None
+    assert _resolve_roi_config_name("some_rest", None) is None
+    assert _resolve_roi_config_name(None, "cam1") is None
