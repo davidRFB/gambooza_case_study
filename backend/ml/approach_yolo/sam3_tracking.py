@@ -234,6 +234,9 @@ def run_sam3_video_tracking(
         )
 
     # -- Plot centroid Y over time ------------------------------------------
+    import matplotlib
+
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(12, 4))

@@ -9,6 +9,8 @@ dependencies = [
     "matplotlib",
     "pandas",
     "ultralytics",
+    "clip @ git+https://github.com/ultralytics/CLIP.git",
+    "lap>=0.5.12",
     "fastapi",
     "uvicorn[standard]",
     "sqlalchemy",
@@ -18,6 +20,7 @@ dependencies = [
     "streamlit",
     "requests",
     "streamlit-cropper>=0.3.1",
+    "timm",
 ]
 
 

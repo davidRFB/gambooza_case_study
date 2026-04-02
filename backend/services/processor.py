@@ -11,7 +11,7 @@ import cv2
 import yaml
 from sqlalchemy.orm import Session
 
-from backend.config import PROJECT_ROOT, RESULTS_DIR, ROI_CONFIGS_DIR, YOLO_BASE_CONFIG
+from backend.config import DATA_DIR, PROJECT_ROOT, RESULTS_DIR, ROI_CONFIGS_DIR, YOLO_BASE_CONFIG
 from backend.database.models import TapEvent as TapEventModel
 from backend.database.models import Video
 
@@ -261,16 +261,23 @@ def _run_yolo_pipeline(
     # Set preview_second to 0 to avoid seeking past end of short videos
     cfg.setdefault("yolo", {})["preview_second"] = 0
 
-    # Resolve all relative paths to absolute (load_config resolves relative
-    # to config file's grandparent, which breaks for temp files in /tmp/)
+    # Resolve all relative paths to absolute.
+    # Paths starting with "data/" are under DATA_DIR (which may differ from
+    # PROJECT_ROOT/data in Docker where data is bind-mounted elsewhere).
+    # Other relative paths (e.g. "config/...") resolve against PROJECT_ROOT.
+    def _resolve_path(rel: str) -> str:
+        if rel.startswith("data/"):
+            return str(DATA_DIR / rel.removeprefix("data/"))
+        return str(PROJECT_ROOT / rel)
+
     yolo_cfg = cfg.get("yolo", {})
     if "tracker" in yolo_cfg and not Path(yolo_cfg["tracker"]).is_absolute():
-        yolo_cfg["tracker"] = str(PROJECT_ROOT / yolo_cfg["tracker"])
+        yolo_cfg["tracker"] = _resolve_path(yolo_cfg["tracker"])
     if "model" in yolo_cfg and not Path(yolo_cfg["model"]).is_absolute():
-        yolo_cfg["model"] = str(PROJECT_ROOT / yolo_cfg["model"])
+        yolo_cfg["model"] = _resolve_path(yolo_cfg["model"])
     sam3_cfg = cfg.get("sam3", {})
     if "model" in sam3_cfg and not Path(sam3_cfg["model"]).is_absolute():
-        sam3_cfg["model"] = str(PROJECT_ROOT / sam3_cfg["model"])
+        sam3_cfg["model"] = _resolve_path(sam3_cfg["model"])
 
     # Pre-create tap_roi.json in output dir so ROI stage skips interactive mode
     output_path = Path(output_dir)

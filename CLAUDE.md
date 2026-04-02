@@ -16,7 +16,7 @@ gambooza_case_study/
 ├── pyproject.toml                  # Project config: deps, ruff, pytest
 ├── uv.lock                        # Reproducible dependency lockfile
 ├── .pre-commit-config.yaml         # Ruff lint + format on commit
-├── docker-compose.yml              # (TODO) Docker Compose for full stack
+├── docker-compose.yml              # Docker Compose for full stack
 │
 ├── backend/
 │   ├── __init__.py
@@ -40,7 +40,8 @@ gambooza_case_study/
 │       ├── common.py               # Shared utilities (ROI, cropping, interactive selectors)
 │       ├── approach_simple/
 │       │   ├── __init__.py
-│       │   └── detector.py         # SimpleDetector — CPU pixel differencing
+│       │   ├── detector.py         # SimpleDetector — CPU pixel differencing
+│       │   └── filtering.py        # Activity window detection + clip extraction
 │       └── approach_yolo/
 │           ├── __init__.py
 │           ├── detector.py         # YOLODetector — GPU wrapper + tap assignment
@@ -105,67 +106,119 @@ gambooza_case_study/
 
 ### docker-compose.yml
 
-Two services sharing a named volume for videos and the database.
+Two services: backend with GPU passthrough, frontend depending on backend health.
+Host `./data/` directory is bind-mounted to `/app/mount_data` in the backend container.
 
 ```yaml
-version: "3.9"
 services:
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
     ports:
       - "8000:8000"
+    environment:
+      - DATA_DIR=/app/mount_data
+      - DATABASE_URL=sqlite:////app/mount_data/db_files/app.db
+      - ML_APPROACH=${ML_APPROACH:-yolo}
     volumes:
-      - results_data:/app/data/results
-      - db_data:/app/data/db_files
+      - ./data:/app/mount_data
     deploy:
       resources:
         reservations:
           devices:
-            - capabilities: [gpu]  # Enable GPU passthrough
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3.11", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
 
   frontend:
-    build: ./frontend
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
     ports:
       - "8501:8501"
-    depends_on:
-      - backend
     environment:
       - BACKEND_URL=http://backend:8000
-
-volumes:
-  results_data:
-  db_data:
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
 ```
 
 ### Key Docker Decisions
 
-- **GPU passthrough:** Use `nvidia-container-toolkit` so the backend container can access the host GPU. Required for both YOLO inference and faster OpenCV processing.
-- **Shared volumes:** Videos and pipeline outputs saved in `data/results/web_{id}/`; both services read the SQLite DB (though only the backend writes).
-- **Always YOLO:** Processing always runs the full YOLO+SAM3 pipeline. SimpleDetector is planned as a future pre-filter for long videos (see notes.txt).
+- **GPU passthrough:** Use `nvidia-container-toolkit` so the backend container can access the host GPU. Required for both YOLO inference and SAM3 segmentation.
+- **Bind mount:** `./data` on host → `/app/mount_data` in container. The `DATA_DIR` env var tells `backend/config.py` where to find models, DB, ROI configs, and results. This decouples the host data layout from the container's `/app` directory.
+- **Always YOLO:** Processing always runs the full YOLO+SAM3 pipeline. SimpleDetector is used as a pre-filter for long videos (> 2500 frames) when simple ROIs are available.
 
-### Backend Dockerfile Skeleton
+### Backend Dockerfile (`Dockerfile.backend`)
+
+Multi-stage build: builder (uv + deps) → runtime (CUDA + Python 3.11).
 
 ```dockerfile
-FROM python:3.11-slim
-# Install system deps for OpenCV
-RUN apt-get update && apt-get install -y libgl1-mesa-glx libglib2.0-0 ffmpeg
+# ── Builder stage: install dependencies with uv ──────────────────
+FROM python:3.11-slim AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends git build-essential \
+    && rm -rf /var/lib/apt/lists/*
+ENV PYTHONDONTWRITEBYTECODE=1 UV_COMPILE_BYTECODE=0 UV_LINK_MODE=copy
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
+
+# ── Runtime stage: CUDA + Python 3.11 ────────────────────────────
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+ENV DEBIAN_FRONTEND=noninteractive PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
+    MPLBACKEND=Agg YOLO_AUTOINSTALL=False
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 python3.11-venv python3.11-dev \
+    libgl1-mesa-glx libglib2.0-0 ffmpeg gcc g++ \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=builder /app/.venv /app/.venv
+RUN ln -sf /usr/bin/python3.11 /app/.venv/bin/python && \
+    ln -sf /usr/bin/python3.11 /app/.venv/bin/python3
+ENV PATH="/app/.venv/bin:$PATH"
+COPY backend/ ./backend/
+COPY config/ ./config/
+EXPOSE 8000
 CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
-### Frontend Dockerfile Skeleton
+Key details:
+- **`build-essential` in builder:** Required for compiling `lap` (C extension used by BoT-SORT tracker).
+- **`gcc g++ python3.11-dev` in runtime:** Required for PyTorch Triton JIT compilation (SAM3 uses torch.compile/inductor which compiles CUDA kernels at runtime).
+- **`YOLO_AUTOINSTALL=False`:** Prevents ultralytics from trying to `pip install` optional packages at runtime. All required packages (`timm`, `clip`, `lap`) are declared in `pyproject.toml` and installed at build time.
+- **Shebang fix:** Builder venv has `python` symlinks pointing to the builder's Python; runtime only has `python3.11` from deadsnakes, so symlinks are patched.
+
+### Frontend Dockerfile (`Dockerfile.frontend`)
 
 ```dockerfile
 FROM python:3.11-slim
 WORKDIR /app
-COPY requirements.txt .
+COPY frontend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
+COPY frontend/ ./
+EXPOSE 8501
 CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
 ```
+
+### Docker Path Resolution
+
+In Docker, data lives at `/app/mount_data/` (bind-mounted from `./data`), but `config/pipeline.yaml` has relative paths like `data/models/sam3.pt`. The processor (`backend/services/processor.py`) resolves these using `_resolve_path()`:
+- Paths starting with `data/` → resolved relative to `DATA_DIR` (`/app/mount_data/`)
+- Other relative paths (e.g. `config/botsort.yaml`) → resolved relative to `PROJECT_ROOT` (`/app/`)
+
+This ensures the same `pipeline.yaml` works both locally and in Docker without modification.
 
 ---
 
@@ -273,19 +326,22 @@ No parameters needed — ROI config is resolved automatically from the video's `
 
 ### Background Processing (`backend/services/processor.py`)
 
+The processor automatically chooses between two paths based on video length and ROI config:
+
+- **Short videos** (≤ 2500 frames) or **no simple ROIs**: direct YOLO pipeline
+- **Long videos** (> 2500 frames) with **simple ROIs** in config: filtered pipeline (SimpleDetector pre-filter → clip extraction → YOLO on clips)
+
 ```
 process_video(video_id, db):
     1. Set status='processing', record processing_started_at
-    2. Resolve ROI config from video's restaurant_name + camera_id:
+    2. Detect video length (total_frames, fps, duration)
+    3. Resolve ROI config from video's restaurant_name + camera_id:
        - Looks for data/roi_configs/{restaurant}_{camera}.json
        - Raises error if not found (no default fallback)
-    3. Create temp YAML config from config/pipeline.yaml:
-       - Override video_path → data/results/web_{video_id}/{filename}
-       - Override output_dir → data/results/web_{video_id}/
-       - Override roi.tap_roi + sam3.tap_bboxes from ROI config
-       - Resolve all relative paths to absolute (tracker, models)
-       - Pre-create tap_roi.json in output_dir (skip interactive mode)
-    4. Run YOLODetector(temp_config).run()
+    4. Branch: if total_frames > 2500 AND "simple" section in ROI config:
+       → _run_filtered_pipeline()  (see below)
+       Otherwise:
+       → _run_yolo_pipeline()  (direct YOLO on full video)
     5. Clear any existing tap_events for this video (re-processing safe)
     6. Map pour_events to DB TapEvent rows:
        - "TAP_A" → "A", "TAP_B" → "B"
@@ -295,12 +351,58 @@ process_video(video_id, db):
     8. On exception: status='error', save error_message
 ```
 
+#### Filtered Pipeline (`_run_filtered_pipeline`)
+
+For long videos, running YOLO on every frame is too slow. The filtered pipeline uses SimpleDetector (fast CPU pixel differencing) to find activity windows, then runs the full YOLO+SAM3 pipeline only on those clips.
+
+```
+_run_filtered_pipeline(video_path, video_id, roi, video, db, fps):
+    Stage 1: SimpleDetector (status='processing_filter')
+       - Uses simple ROIs from config (roi_1, roi_2 — normalized 0-1)
+       - Parameters: sample_every=3, on_threshold=0.05, min_on_frames=10, n_workers=1
+       - Produces per-tap activity signals (fraction of changed pixels per frame)
+       - Saves simple_summary.json
+
+    Stage 2: Activity Windows + Clip Extraction (status='processing_clips')
+       - find_activity_windows(): combines tap signals, finds stretches > threshold
+         - threshold=0.05, padding_s=5.0, merge_gap_s=40.0
+         - Merges nearby windows to avoid fragmenting single pour events
+       - extract_clips(): writes MP4 clips for each window
+         - Named: clip_{i:03d}_{start}s_{end}s.mp4
+       - Saves activity_windows.json, records num_clips + filtered_duration_s
+
+    Stage 3: YOLO on Each Clip (status='processing_yolo')
+       - Runs _run_yolo_pipeline() on each clip independently
+       - Maps timestamps back to original video:
+         event.time_start += window.start_s
+         event.frame_start += int(window.start_s * fps)
+       - Aggregates pour events from all clips
+```
+
+**Example:** A 2-hour video (216,000 frames at 30fps) might have 8 activity windows totaling 12 minutes. SimpleDetector scans the full video in ~15 seconds on CPU, then YOLO processes only those 12 minutes instead of 2 hours.
+
+#### Direct YOLO Pipeline (`_run_yolo_pipeline`)
+
+```
+_run_yolo_pipeline(video_path, video_id, roi, output_subdir=None):
+    1. Load base config from config/pipeline.yaml
+    2. Override: video_path, output_dir, roi.tap_roi, sam3.tap_bboxes
+    3. Resolve relative paths: `data/` paths via DATA_DIR, others via PROJECT_ROOT
+    4. Pre-create tap_roi.json in output_dir (skip interactive mode)
+    5. Write temp YAML config, run YOLODetector(config).run()
+    6. Return pour_events list
+```
+
 ### ROI Config System (`data/roi_configs/`)
 
 ROI configs are JSON files named by restaurant+camera: `{restaurant_name}_{camera_id}.json`. There is **no default fallback** — each restaurant+camera combo must have its own config. Configs can be created via the frontend's visual ROI wizard or the CLI interactive tools.
 
 ```json
 {
+  "simple": {
+    "roi_1": [0.5172, 0.4583, 0.5469, 0.7889],
+    "roi_2": [0.5359, 0.4972, 0.5781, 0.8111]
+  },
   "yolo": {
     "tap_roi": [0.4483, 0.3702, 0.6655, 0.8278],
     "sam3_tap_bboxes": [
@@ -311,8 +413,13 @@ ROI configs are JSON files named by restaurant+camera: `{restaurant_name}_{camer
 }
 ```
 
-- `yolo.tap_roi`: normalized (0–1) crop region on the full frame
-- `yolo.sam3_tap_bboxes`: pixel-space bounding boxes on the cropped frame for TAP_A and TAP_B
+- **`yolo`** section (mandatory):
+  - `tap_roi`: normalized (0–1) crop region on the full frame
+  - `sam3_tap_bboxes`: pixel-space bounding boxes on the cropped frame for TAP_A and TAP_B
+- **`simple`** section (optional — enables filtered pipeline for long videos):
+  - `roi_1`: normalized (0–1) bounding box around Tap A handle area (for pixel differencing)
+  - `roi_2`: normalized (0–1) bounding box around Tap B handle area (defaults to roi_1 if omitted)
+  - When present and video > 2500 frames, SimpleDetector pre-filter runs before YOLO
 - Resolution: `_resolve_roi_config_name(restaurant, camera)` → returns `"{restaurant}_{camera}"` if file exists, else `None` (error)
 - Naming validated: only `[a-zA-Z0-9_-]` allowed in restaurant_name and camera_id
 
@@ -402,7 +509,7 @@ Only one video processes at a time (GPU constraint). No backend changes needed:
 
 Processing always runs the full YOLO+SAM3 pipeline. SimpleDetector is available as a CLI tool and planned as a future pre-filter for long videos (see Optimization section below).
 
-### Approach A: SimpleDetector (CPU, fast) — CLI only
+### Approach A: SimpleDetector (CPU, fast) — Pre-filter + CLI
 
 `backend/ml/approach_simple/detector.py` — pixel differencing on two small tap-handle ROIs.
 
@@ -410,8 +517,9 @@ Processing always runs the full YOLO+SAM3 pipeline. SimpleDetector is available 
 - ON/OFF thresholding → event detection (each OFF→ON→OFF cycle = 1 pour event)
 - Multiprocessing on chunks for long videos (> 3000 frames)
 - Runs in seconds on CPU, no GPU needed
-- Outputs: per-tap time series, tap heatmaps, event list
-- **Not used by the web app** — planned as pre-filter for YOLO (see notes.txt)
+- Outputs: per-tap activity signals, tap heatmaps, event list
+- **Used by the web app** as a pre-filter for long videos (> 2500 frames) when the ROI config has a `simple` section — finds activity windows, extracts clips, then YOLO runs only on those clips
+- Also available as a standalone CLI tool
 
 ```bash
 # Interactive ROI selection:
@@ -577,6 +685,7 @@ python scripts/run_yolo_pipeline.py --config config/pipeline.yaml --force
 |------|---------|
 | `backend/ml/common.py` | Shared utilities — ROI selection, cropping, interactive selectors |
 | `backend/ml/approach_simple/detector.py` | SimpleDetector — CPU pixel differencing |
+| `backend/ml/approach_simple/filtering.py` | Activity window detection + clip extraction |
 | `backend/ml/approach_yolo/detector.py` | YOLODetector — GPU wrapper + tap assignment |
 | `backend/ml/approach_yolo/pipeline.py` | 4-stage orchestrator (ROI → YOLO → Relink → SAM3) |
 | `backend/ml/approach_yolo/yolo_track.py` | YOLO-World + BoT-SORT tracking |
@@ -669,7 +778,7 @@ Notebook-based exploration → two production detectors:
 7. ✅ 59 tests covering all layers (including frontend api_client).
 8. ✅ End-to-end tested: upload → process → completed with tap events.
 9. ✅ Streamlit UI — two tabs, restaurant/camera dropdowns, ROI wizard (streamlit-cropper), ROI preview, queue management, delete.
-10. 🔲 Create Dockerfiles and docker-compose.yml.
+10. ✅ Dockerfiles (multi-stage backend + frontend) and docker-compose.yml.
 
 ### Phase 3: Polish
 
@@ -686,7 +795,7 @@ Notebook-based exploration → two production detectors:
 
 These should go in the README or be prepared as talking points:
 
-1. **Simple vs YOLO:** Simple is faster and requires no GPU but is fragile to environmental changes. YOLO is robust but heavier. The planned hybrid (Simple as pre-filter → YOLO on active windows only) is the best of both worlds but requires solving tracker continuity across time gaps.
+1. **Simple vs YOLO (hybrid approach implemented):** Simple is faster and requires no GPU but is fragile to environmental changes. YOLO is robust but heavier. The hybrid approach is implemented: SimpleDetector scans the full video on CPU (~15s for 2h), finds activity windows, extracts clips, then YOLO+SAM3 runs only on those clips. Activated automatically for videos > 2500 frames when the ROI config has a `simple` section.
 
 2. **Frame sampling rate:** Processing every frame is accurate but slow (a 2h video at 30fps = 216,000 frames). Sampling every 3rd frame (10 effective fps) cuts processing by 3x with negligible accuracy loss for events lasting several seconds.
 
@@ -731,6 +840,8 @@ All dependencies are managed in `pyproject.toml` with `uv`.
 
 ```
 opencv-python, numpy, matplotlib, pandas, ultralytics,
+clip (git+https://github.com/ultralytics/CLIP.git),
+lap, timm,
 fastapi, uvicorn[standard], sqlalchemy, aiofiles,
 python-multipart, pyyaml, streamlit, requests,
 streamlit-cropper

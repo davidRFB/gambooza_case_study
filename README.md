@@ -16,7 +16,15 @@ Streamlit (frontend)  ──HTTP──>  FastAPI (backend + ML pipeline)  ──
 - **ML Pipeline:** YOLO-World (zero-shot object detection) + BoT-SORT (tracking) + SAM3 (tap handle segmentation) for accurate, robust counting.
 - **Database:** SQLite with SQLAlchemy ORM. Videos + TapEvents tables.
 
-## ML Pipeline (4 stages)
+## ML Pipeline
+
+### Smart Filtering (long videos)
+
+For videos longer than ~80 seconds (2500 frames), a **SimpleDetector pre-filter** runs first on CPU using pixel differencing. It scans the full video in seconds, identifies activity windows (moments when tap handles move), and extracts short clips. The YOLO+SAM3 pipeline then processes only those clips instead of the entire video. This is activated automatically when the ROI config includes a `simple` section with per-tap handle ROIs.
+
+Example: a 2-hour video might yield 8 activity clips totaling 12 minutes — reducing YOLO processing time from hours to minutes.
+
+### YOLO+SAM3 Pipeline (4 stages)
 
 1. **ROI Selection** — Crop region + tap handle bounding boxes (interactive or from saved config)
 2. **YOLO Tracking** — YOLO-World detects cups/persons on cropped video, BoT-SORT assigns persistent IDs
@@ -50,8 +58,9 @@ Open http://localhost:8501, upload a video, draw the ROI regions, and process.
 ### Docker Compose
 
 ```bash
-# Ensure data directories exist
+# Ensure data directories and model weights exist
 mkdir -p data/{db_files,models,roi_configs,results}
+# Place yolov8x-worldv2.pt and sam3.pt in data/models/
 
 # Build and start
 docker compose up --build
@@ -59,9 +68,14 @@ docker compose up --build
 
 - Frontend: http://localhost:8501
 - Backend API: http://localhost:8000
-- Data persists in `./data/` on the host (bind-mounted)
+- Data persists in `./data/` on the host (bind-mounted to `/app/mount_data` in the container)
 
-> Requires `nvidia-container-toolkit` for GPU passthrough.
+> **Requirements:** `nvidia-container-toolkit` for GPU passthrough, NVIDIA GPU with CUDA support.
+
+The backend uses a multi-stage Docker build: dependencies are installed with `uv` in a builder stage, then copied to a CUDA runtime image with Python 3.11. Key env vars:
+- `DATA_DIR=/app/mount_data` — tells the backend where bind-mounted data lives
+- `YOLO_AUTOINSTALL=False` — prevents ultralytics from auto-installing optional packages at runtime
+- `gcc/g++` are included in the runtime image for PyTorch Triton JIT compilation (used by SAM3)
 
 ## API Endpoints
 
@@ -93,7 +107,7 @@ backend/
   services/            # background processor
   ml/
     approach_yolo/     # YOLO + SAM3 pipeline (used by web app)
-    approach_simple/   # CPU pixel-differencing (CLI only)
+    approach_simple/   # CPU pixel-differencing (pre-filter for long videos + CLI)
 frontend/
   app.py               # Streamlit UI (upload, ROI wizard, dashboard)
   utils/api_client.py  # Backend HTTP client
@@ -106,7 +120,7 @@ tests/                 # pytest suite (59 tests)
 
 | Decision | Why |
 |----------|-----|
-| **YOLO+SAM3 over pixel differencing** | Robust to lighting, occlusion, and camera angle. Pixel method is faster but fragile. |
+| **Hybrid: pixel pre-filter + YOLO+SAM3** | Pixel differencing (CPU, seconds) finds activity windows; YOLO+SAM3 (GPU, accurate) processes only those clips. Best of both worlds for long videos. |
 | **SQLite over Postgres** | Single-user demo, trivial setup. Postgres needed for concurrency. |
 | **Streamlit over React** | Delivers required UI in ~600 lines. React would need separate build tooling. |
 | **BackgroundTasks over Celery** | Simple, no extra infra. Celery+Redis for production scale. |

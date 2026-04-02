@@ -1,6 +1,9 @@
 # ── Builder stage: install dependencies with uv ──────────────────
 FROM python:3.11-slim AS builder
 
+RUN apt-get update && apt-get install -y --no-install-recommends git build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_COMPILE_BYTECODE=0 \
     UV_LINK_MODE=copy
@@ -20,21 +23,29 @@ FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    MPLBACKEND=Agg \
+    YOLO_AUTOINSTALL=False
 
 # Install Python 3.11 from deadsnakes PPA + system deps for OpenCV
 RUN apt-get update && apt-get install -y --no-install-recommends \
     software-properties-common \
     && add-apt-repository ppa:deadsnakes/ppa \
     && apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 python3.11-venv \
+    python3.11 python3.11-venv python3.11-dev \
     libgl1-mesa-glx libglib2.0-0 ffmpeg \
+    gcc g++ \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Copy venv from builder
 COPY --from=builder /app/.venv /app/.venv
+
+# Fix shebangs: builder venv expects "python" but runtime only has python3.11
+RUN ln -sf /usr/bin/python3.11 /app/.venv/bin/python && \
+    ln -sf /usr/bin/python3.11 /app/.venv/bin/python3
+
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Copy application code (data/ is bind-mounted at runtime)
