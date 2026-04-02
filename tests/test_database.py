@@ -47,6 +47,7 @@ def test_videos_columns(db):
         "clip_extract_time_s",
         "yolo_time_s",
         "num_clips",
+        "clips_completed",
         "filtered_duration_s",
     }
     assert expected == cols

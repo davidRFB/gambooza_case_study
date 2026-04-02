@@ -1,5 +1,9 @@
+import io
+
 import pandas as pd
 import streamlit as st
+from PIL import Image, ImageDraw
+from streamlit_cropper import st_cropper
 from utils.api_client import (
     BackendUnavailable,
     check_roi_config,
@@ -353,10 +357,6 @@ with tab_upload:
 
     # ROI preview confirmation — show first frame with boxes, confirm before processing
     if st.session_state.get("roi_confirm_active"):
-        import io
-
-        from PIL import Image, ImageDraw
-
         video_id = st.session_state.active_video_id
         restaurant_name = st.session_state.roi_confirm_restaurant
         camera_id = st.session_state.roi_confirm_camera
@@ -463,11 +463,6 @@ with tab_upload:
 
     # ROI Selection flow — multi-step wizard
     if st.session_state.get("roi_selection_active"):
-        import io
-
-        from PIL import Image
-        from streamlit_cropper import st_cropper
-
         video_id = st.session_state.active_video_id
         restaurant_name = st.session_state.roi_restaurant
         camera_id = st.session_state.roi_camera
@@ -757,11 +752,18 @@ with tab_upload:
                 st.rerun()
 
         elif status["status"].startswith("processing"):
+            # Build progress label — show clip progress during YOLO stage
+            clips_done = status.get("clips_completed") or 0
+            num_clips = status.get("num_clips")
+            if status["status"] == "processing_yolo" and num_clips and num_clips > 0:
+                yolo_label = f"Etapa 3/3: Ejecutando YOLO en clips ({clips_done}/{num_clips})..."
+            else:
+                yolo_label = "Etapa 3/3: Ejecutando YOLO en clips..."
             stage_labels = {
                 "processing": "Procesando (YOLO)...",
                 "processing_filter": "Etapa 1/3: Ejecutando filtro de actividad...",
                 "processing_clips": "Etapa 2/3: Extrayendo clips de actividad...",
-                "processing_yolo": "Etapa 3/3: Ejecutando YOLO en clips...",
+                "processing_yolo": yolo_label,
             }
             label = stage_labels.get(status["status"], "Procesando...")
             st.warning(f"{label} — {status['original_name']}")

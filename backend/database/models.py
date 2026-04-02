@@ -39,6 +39,7 @@ class Video(Base):
     clip_extract_time_s = Column(Float, nullable=True)
     yolo_time_s = Column(Float, nullable=True)
     num_clips = Column(Integer, nullable=True)
+    clips_completed = Column(Integer, nullable=True, default=0)
     filtered_duration_s = Column(Float, nullable=True)
 
     tap_events = relationship(

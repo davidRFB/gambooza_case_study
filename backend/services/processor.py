@@ -96,15 +96,15 @@ def process_video(video_id: int, db: Session):
             video.yolo_time_s = round(time.time() - t0, 2)
         logger.info("Pipeline returned %d pour events", len(pour_events))
 
-        # Clear any existing tap events from previous runs
-        old_count = db.query(TapEventModel).filter(TapEventModel.video_id == video_id).delete()
-        if old_count:
-            logger.info("Cleared %d old tap events for video %d", old_count, video_id)
-
-        # Map results to DB
-        tap_events_db = _map_pour_events(video_id, pour_events)
-        db.add_all(tap_events_db)
-        logger.info("Saved %d tap events to DB", len(tap_events_db))
+        # For the direct path, save all events at once.
+        # (Filtered path already saved events incrementally inside the clip loop.)
+        if not use_filter:
+            old_count = db.query(TapEventModel).filter(TapEventModel.video_id == video_id).delete()
+            if old_count:
+                logger.info("Cleared %d old tap events for video %d", old_count, video_id)
+            tap_events_db = _map_pour_events(video_id, pour_events)
+            db.add_all(tap_events_db)
+            logger.info("Saved %d tap events to DB", len(tap_events_db))
 
         video.status = "completed"
         video.ml_approach = "yolo"
@@ -202,6 +202,9 @@ def _run_filtered_pipeline(
 
     # --- Stage 3: YOLO on each clip ---
     video.status = "processing_yolo"
+    # Clear old tap events before the loop (incremental saving below)
+    db.query(TapEventModel).filter(TapEventModel.video_id == video_id).delete()
+    video.clips_completed = 0
     db.commit()
 
     t0 = time.time()
@@ -226,6 +229,12 @@ def _run_filtered_pipeline(
             event["frame_start"] += offset_frames
             event["frame_end"] += offset_frames
         all_pour_events.extend(clip_events)
+
+        # Save this clip's events immediately so dashboard updates incrementally
+        tap_events_db = _map_pour_events(video_id, clip_events)
+        db.add_all(tap_events_db)
+        video.clips_completed = i + 1
+        db.commit()
 
     video.yolo_time_s = round(time.time() - t0, 2)
     logger.info("Video %d: YOLO completed in %.1fs", video_id, video.yolo_time_s)
