@@ -57,6 +57,12 @@ class VideoStatusResponse(BaseModel):
     processing_started_at: datetime | None
     processing_finished_at: datetime | None
     output_dir: str | None
+    total_frames: int | None = None
+    filter_time_s: float | None = None
+    clip_extract_time_s: float | None = None
+    yolo_time_s: float | None = None
+    num_clips: int | None = None
+    filtered_duration_s: float | None = None
     tap_a_count: int
     tap_b_count: int
     total: int

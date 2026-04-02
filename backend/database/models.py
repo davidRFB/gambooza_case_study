@@ -33,6 +33,14 @@ class Video(Base):
     restaurant_name = Column(String, nullable=True)  # e.g. "cerveceria_centro"
     camera_id = Column(String, nullable=True)  # e.g. "cam1"
 
+    # Processing timing and filter metadata
+    total_frames = Column(Integer, nullable=True)
+    filter_time_s = Column(Float, nullable=True)
+    clip_extract_time_s = Column(Float, nullable=True)
+    yolo_time_s = Column(Float, nullable=True)
+    num_clips = Column(Integer, nullable=True)
+    filtered_duration_s = Column(Float, nullable=True)
+
     tap_events = relationship(
         "TapEvent",
         back_populates="video",

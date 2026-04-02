@@ -37,14 +37,14 @@ with tab_upload:
         st.divider()
 
     active_id = st.session_state.get("active_video_id")
+    _active_status = get_video_status(active_id)["status"] if active_id else None
+    _active_busy = _active_status in ("pending",) or (_active_status or "").startswith("processing")
 
     # Only show uploader when not processing and not in ROI selection/confirm
     if (
         not st.session_state.get("roi_selection_active")
         and not st.session_state.get("roi_confirm_active")
-        and (
-            not active_id or get_video_status(active_id)["status"] not in ("pending", "processing")
-        )
+        and not _active_busy
     ):
         # Restaurant + Camera selection
         rest_data = get_restaurants()
@@ -144,7 +144,7 @@ with tab_upload:
                 st.rerun()
             else:
                 # Auto-trigger processing
-                any_processing = any(v["status"] == "processing" for v in list_videos())
+                any_processing = any(v["status"].startswith("processing") for v in list_videos())
                 if any_processing:
                     st.toast(
                         f"Uploaded: {result['original_name']} — queued (another video is processing)"
@@ -185,6 +185,18 @@ with tab_upload:
                 tap_roi = yolo.get("tap_roi", [])
                 sam3_bboxes = yolo.get("sam3_tap_bboxes", [])
 
+                # Draw filter ROIs if present
+                simple = roi_data.get("simple", {})
+                for key, label in [("roi_1", "FILTER 1"), ("roi_2", "FILTER 2")]:
+                    froi = simple.get(key)
+                    if froi and len(froi) == 4:
+                        fx1 = int(froi[0] * img_w)
+                        fy1 = int(froi[1] * img_h)
+                        fx2 = int(froi[2] * img_w)
+                        fy2 = int(froi[3] * img_h)
+                        draw.rectangle([fx1, fy1, fx2, fy2], outline="#FF0000", width=2)
+                        draw.text((fx1 + 4, fy1 + 4), label, fill="#FF0000")
+
                 if len(tap_roi) == 4:
                     x1 = int(tap_roi[0] * img_w)
                     y1 = int(tap_roi[1] * img_h)
@@ -220,7 +232,7 @@ with tab_upload:
                     "roi_confirm_camera",
                 ]:
                     st.session_state.pop(k, None)
-                any_processing = any(v["status"] == "processing" for v in list_videos())
+                any_processing = any(v["status"].startswith("processing") for v in list_videos())
                 if any_processing:
                     st.toast("Queued — another video is processing")
                 else:
@@ -273,9 +285,102 @@ with tab_upload:
         frame_image = Image.open(io.BytesIO(st.session_state.roi_frame_bytes))
         img_w, img_h = frame_image.size
 
-        # ── Step 1: Select crop region on full frame ──
+        def _cancel_roi():
+            st.session_state.roi_selection_active = False
+            for k in [
+                "roi_step",
+                "roi_frame_bytes",
+                "roi_tap_roi",
+                "roi_cropped_bytes",
+                "roi_tap_a_bbox",
+                "roi_filter_1",
+                "roi_filter_2",
+                "roi_restaurant",
+                "roi_camera",
+            ]:
+                st.session_state.pop(k, None)
+            st.rerun()
+
+        # ── Step 1: Select FILTER ROI 1 on full frame ──
         if roi_step == 1:
-            st.markdown("**Step 1 of 3** — Select the tap area (crop region)")
+            st.markdown("**Step 1 of 5** — Select **Filter Region 1** (TAP A handle area)")
+            st.info(
+                "Drag the red box to tightly cover the TAP A handle. "
+                "This small region is used for fast activity detection on long videos."
+            )
+
+            _, filter_box_1 = st_cropper(
+                frame_image,
+                box_color="#FF0000",
+                return_type="both",
+                key="filter_roi_1",
+            )
+
+            if (
+                filter_box_1
+                and filter_box_1.get("width", 0) > 5
+                and filter_box_1.get("height", 0) > 5
+            ):
+                roi_f1 = [
+                    round(filter_box_1["left"] / img_w, 4),
+                    round(filter_box_1["top"] / img_h, 4),
+                    round((filter_box_1["left"] + filter_box_1["width"]) / img_w, 4),
+                    round((filter_box_1["top"] + filter_box_1["height"]) / img_h, 4),
+                ]
+                st.caption(f"Filter ROI 1 (normalized): {roi_f1}")
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Confirm & Continue", type="primary", key="confirm_f1"):
+                        st.session_state.roi_filter_1 = roi_f1
+                        st.session_state.roi_step = 2
+                        st.rerun()
+                with col2:
+                    if st.button("Cancel", key="cancel_step1"):
+                        _cancel_roi()
+
+        # ── Step 2: Select FILTER ROI 2 on full frame ──
+        elif roi_step == 2:
+            st.markdown("**Step 2 of 5** — Select **Filter Region 2** (TAP B handle area)")
+            st.info(
+                "Drag the red box to tightly cover the TAP B handle. "
+                "This small region is used for fast activity detection on long videos."
+            )
+
+            _, filter_box_2 = st_cropper(
+                frame_image,
+                box_color="#FF0000",
+                return_type="both",
+                key="filter_roi_2",
+            )
+
+            if (
+                filter_box_2
+                and filter_box_2.get("width", 0) > 5
+                and filter_box_2.get("height", 0) > 5
+            ):
+                roi_f2 = [
+                    round(filter_box_2["left"] / img_w, 4),
+                    round(filter_box_2["top"] / img_h, 4),
+                    round((filter_box_2["left"] + filter_box_2["width"]) / img_w, 4),
+                    round((filter_box_2["top"] + filter_box_2["height"]) / img_h, 4),
+                ]
+                st.caption(f"Filter ROI 2 (normalized): {roi_f2}")
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Confirm & Continue", type="primary", key="confirm_f2"):
+                        st.session_state.roi_filter_2 = roi_f2
+                        st.session_state.roi_step = 3
+                        st.rerun()
+                with col2:
+                    if st.button("Back to Filter ROI 1", key="back_step2"):
+                        st.session_state.roi_step = 1
+                        st.rerun()
+
+        # ── Step 3: Select crop region on full frame ──
+        elif roi_step == 3:
+            st.markdown("**Step 3 of 5** — Select the **tap area** (crop region for YOLO)")
             st.info("Drag the orange box to cover the area where taps and cups are visible.")
 
             cropped_img, crop_box = st_cropper(
@@ -297,7 +402,6 @@ with tab_upload:
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.button("Confirm Crop & Continue", type="primary"):
-                        # Save crop data and the cropped image bytes
                         st.session_state.roi_tap_roi = tap_roi
                         crop_l = int(crop_box["left"])
                         crop_t = int(crop_box["top"])
@@ -307,25 +411,16 @@ with tab_upload:
                         buf = io.BytesIO()
                         cropped_pil.save(buf, format="JPEG")
                         st.session_state.roi_cropped_bytes = buf.getvalue()
-                        st.session_state.roi_step = 2
+                        st.session_state.roi_step = 4
                         st.rerun()
                 with col2:
-                    if st.button("Cancel", key="cancel_step1"):
-                        st.session_state.roi_selection_active = False
-                        for k in [
-                            "roi_step",
-                            "roi_frame_bytes",
-                            "roi_tap_roi",
-                            "roi_cropped_bytes",
-                            "roi_restaurant",
-                            "roi_camera",
-                        ]:
-                            st.session_state.pop(k, None)
+                    if st.button("Back to Filter ROI 2", key="back_step3"):
+                        st.session_state.roi_step = 2
                         st.rerun()
 
-        # ── Step 2: Select TAP A on cropped image ──
-        elif roi_step == 2:
-            st.markdown("**Step 2 of 3** — Select **TAP A** handle")
+        # ── Step 4: Select TAP A on cropped image ──
+        elif roi_step == 4:
+            st.markdown("**Step 4 of 5** — Select **TAP A** handle on cropped image")
             st.info("Drag the blue box to cover the TAP A (left tap) handle.")
 
             cropped_img = Image.open(io.BytesIO(st.session_state.roi_cropped_bytes))
@@ -350,16 +445,16 @@ with tab_upload:
                 with col1:
                     if st.button("Confirm TAP A & Continue", type="primary"):
                         st.session_state.roi_tap_a_bbox = bbox_a
-                        st.session_state.roi_step = 3
+                        st.session_state.roi_step = 5
                         st.rerun()
                 with col2:
-                    if st.button("Back to Step 1", key="back_step2"):
-                        st.session_state.roi_step = 1
+                    if st.button("Back to Crop", key="back_step4"):
+                        st.session_state.roi_step = 3
                         st.rerun()
 
-        # ── Step 3: Select TAP B on cropped image ──
-        elif roi_step == 3:
-            st.markdown("**Step 3 of 3** — Select **TAP B** handle")
+        # ── Step 5: Select TAP B on cropped image ──
+        elif roi_step == 5:
+            st.markdown("**Step 5 of 5** — Select **TAP B** handle on cropped image")
             st.info("Drag the green box to cover the TAP B (right tap) handle.")
 
             cropped_img = Image.open(io.BytesIO(st.session_state.roi_cropped_bytes))
@@ -383,6 +478,8 @@ with tab_upload:
                 # Show summary before saving
                 st.divider()
                 st.markdown("**Summary**")
+                st.caption(f"Filter ROI 1: {st.session_state.roi_filter_1}")
+                st.caption(f"Filter ROI 2: {st.session_state.roi_filter_2}")
                 st.caption(f"Crop ROI: {st.session_state.roi_tap_roi}")
                 st.caption(f"TAP A: {st.session_state.roi_tap_a_bbox}")
                 st.caption(f"TAP B: {bbox_b}")
@@ -391,13 +488,17 @@ with tab_upload:
                 with col1:
                     if st.button("Save ROI & Start Processing", type="primary"):
                         roi_data = {
+                            "simple": {
+                                "roi_1": st.session_state.roi_filter_1,
+                                "roi_2": st.session_state.roi_filter_2,
+                            },
                             "yolo": {
                                 "tap_roi": st.session_state.roi_tap_roi,
                                 "sam3_tap_bboxes": [
                                     st.session_state.roi_tap_a_bbox,
                                     bbox_b,
                                 ],
-                            }
+                            },
                         }
                         save_roi_config(restaurant_name, camera_id, roi_data)
                         st.toast(f"ROI config saved for {restaurant_name}/{camera_id}")
@@ -410,20 +511,24 @@ with tab_upload:
                             "roi_tap_roi",
                             "roi_cropped_bytes",
                             "roi_tap_a_bbox",
+                            "roi_filter_1",
+                            "roi_filter_2",
                             "roi_restaurant",
                             "roi_camera",
                         ]:
                             st.session_state.pop(k, None)
 
                         # Start processing
-                        any_processing = any(v["status"] == "processing" for v in list_videos())
+                        any_processing = any(
+                            v["status"].startswith("processing") for v in list_videos()
+                        )
                         if not any_processing:
                             process_video(video_id)
                             st.toast("Processing started")
                         st.rerun()
                 with col2:
-                    if st.button("Back to TAP A", key="back_step3"):
-                        st.session_state.roi_step = 2
+                    if st.button("Back to TAP A", key="back_step5"):
+                        st.session_state.roi_step = 4
                         st.rerun()
 
     # Show status for active video
@@ -436,7 +541,7 @@ with tab_upload:
         status = get_video_status(video_id)
 
         if status["status"] == "pending":
-            any_processing = any(v["status"] == "processing" for v in list_videos())
+            any_processing = any(v["status"].startswith("processing") for v in list_videos())
             if any_processing:
                 st.warning(
                     f"Queued: {status['original_name']} — waiting for another video to finish"
@@ -451,8 +556,15 @@ with tab_upload:
                 st.toast(f"Processing started: {status['original_name']}")
                 st.rerun()
 
-        elif status["status"] == "processing":
-            st.warning(f"Processing: {status['original_name']}")
+        elif status["status"].startswith("processing"):
+            stage_labels = {
+                "processing": "Processing (YOLO)...",
+                "processing_filter": "Stage 1/3: Running activity filter...",
+                "processing_clips": "Stage 2/3: Extracting activity clips...",
+                "processing_yolo": "Stage 3/3: Running YOLO on clips...",
+            }
+            label = stage_labels.get(status["status"], "Processing...")
+            st.warning(f"{label} — {status['original_name']}")
             if st.button("Refresh Status"):
                 st.rerun()
             # Auto-poll: check every 10s for completion
@@ -466,6 +578,18 @@ with tab_upload:
                 c1.metric("Tap A", status["tap_a_count"])
                 c2.metric("Tap B", status["tap_b_count"])
                 c3.metric("Total", status["total"])
+
+                # Show timing breakdown if filter was used
+                if status.get("num_clips") is not None:
+                    st.caption(
+                        f"Filter: {status.get('filter_time_s', 0):.1f}s | "
+                        f"Clips: {status.get('num_clips', 0)} "
+                        f"({status.get('filtered_duration_s', 0):.0f}s of "
+                        f"{status.get('duration_sec', 0):.0f}s video) | "
+                        f"YOLO: {status.get('yolo_time_s', 0):.1f}s"
+                    )
+                elif status.get("yolo_time_s"):
+                    st.caption(f"YOLO processing: {status['yolo_time_s']:.1f}s")
 
                 if status["events"]:
                     st.subheader("Pour Events")

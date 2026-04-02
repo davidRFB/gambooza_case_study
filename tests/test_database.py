@@ -42,6 +42,12 @@ def test_videos_columns(db):
         "output_dir",
         "restaurant_name",
         "camera_id",
+        "total_frames",
+        "filter_time_s",
+        "clip_extract_time_s",
+        "yolo_time_s",
+        "num_clips",
+        "filtered_duration_s",
     }
     assert expected == cols
 

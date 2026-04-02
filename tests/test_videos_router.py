@@ -223,3 +223,57 @@ def test_save_roi_config_missing_yolo(client):
         },
     )
     assert resp.status_code == 422
+
+
+def test_save_roi_config_with_simple_section(client, tmp_path):
+    """ROI config with both 'simple' and 'yolo' sections saves correctly."""
+    from unittest.mock import patch
+
+    with patch("backend.routers.videos.ROI_CONFIGS_DIR", tmp_path):
+        resp = client.post(
+            "/api/videos/roi-config",
+            json={
+                "restaurant_name": "testrest",
+                "camera_id": "cam2",
+                "roi_data": {
+                    "simple": {
+                        "roi_1": [0.48, 0.44, 0.52, 0.47],
+                        "roi_2": [0.56, 0.41, 0.58, 0.53],
+                    },
+                    "yolo": {
+                        "tap_roi": [0.1, 0.2, 0.3, 0.4],
+                        "sam3_tap_bboxes": [[10, 20, 30, 40], [50, 60, 70, 80]],
+                    },
+                },
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["config_name"] == "testrest_cam2"
+
+    # Verify saved file has both sections
+    import json
+
+    saved = json.loads((tmp_path / "testrest_cam2.json").read_text())
+    assert "simple" in saved
+    assert "yolo" in saved
+    assert saved["simple"]["roi_1"] == [0.48, 0.44, 0.52, 0.47]
+
+
+def test_save_roi_config_simple_bad_roi(client):
+    """Simple section with invalid roi_1 (wrong length) should fail."""
+    resp = client.post(
+        "/api/videos/roi-config",
+        json={
+            "restaurant_name": "test",
+            "camera_id": "cam1",
+            "roi_data": {
+                "simple": {"roi_1": [0.1, 0.2]},
+                "yolo": {
+                    "tap_roi": [0.1, 0.2, 0.3, 0.4],
+                    "sam3_tap_bboxes": [[10, 20, 30, 40], [50, 60, 70, 80]],
+                },
+            },
+        },
+    )
+    assert resp.status_code == 422

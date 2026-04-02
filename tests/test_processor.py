@@ -186,3 +186,83 @@ def test_resolve_roi_config_none_values():
     assert _resolve_roi_config_name(None, None) is None
     assert _resolve_roi_config_name("some_rest", None) is None
     assert _resolve_roi_config_name(None, "cam1") is None
+
+
+def test_load_roi_config_with_simple_section():
+    """ROI config with both 'simple' and 'yolo' sections loads correctly."""
+    path = ROI_CONFIGS_DIR / "_test_full.json"
+    path.write_text(
+        json.dumps(
+            {
+                "simple": {
+                    "roi_1": [0.48, 0.44, 0.52, 0.47],
+                    "roi_2": [0.56, 0.41, 0.58, 0.53],
+                },
+                "yolo": {
+                    "tap_roi": [0.1, 0.2, 0.3, 0.4],
+                    "sam3_tap_bboxes": [[10, 20, 30, 40], [50, 60, 70, 80]],
+                },
+            }
+        )
+    )
+    try:
+        roi = _load_roi_config("_test_full")
+        assert "yolo" in roi
+        assert "simple" in roi
+        assert roi["simple"]["roi_1"] == [0.48, 0.44, 0.52, 0.47]
+        assert roi["simple"]["roi_2"] == [0.56, 0.41, 0.58, 0.53]
+    finally:
+        path.unlink()
+
+
+def test_load_roi_config_without_simple_section():
+    """ROI config with only 'yolo' section (no 'simple') loads fine."""
+    path = ROI_CONFIGS_DIR / "_test_yolo_only.json"
+    path.write_text(
+        json.dumps(
+            {
+                "yolo": {
+                    "tap_roi": [0.1, 0.2, 0.3, 0.4],
+                    "sam3_tap_bboxes": [[10, 20, 30, 40], [50, 60, 70, 80]],
+                }
+            }
+        )
+    )
+    try:
+        roi = _load_roi_config("_test_yolo_only")
+        assert "yolo" in roi
+        assert "simple" not in roi
+    finally:
+        path.unlink()
+
+
+def test_run_yolo_pipeline_with_output_subdir():
+    """Verify output_subdir places output in a subdirectory."""
+    roi = {
+        "yolo": {
+            "tap_roi": [0.1, 0.2, 0.3, 0.4],
+            "sam3_tap_bboxes": [[10, 20, 30, 40], [50, 60, 70, 80]],
+        }
+    }
+
+    fake_result = MagicMock()
+    fake_result.pour_events = []
+
+    captured_config_path = {}
+
+    def capture_detector(config_path):
+        captured_config_path["path"] = config_path
+        with open(config_path) as f:
+            captured_config_path["content"] = yaml.safe_load(f)
+        mock_instance = MagicMock()
+        mock_instance.run.return_value = fake_result
+        return mock_instance
+
+    with patch(
+        "backend.services.processor._import_yolo_detector",
+        return_value=capture_detector,
+    ):
+        _run_yolo_pipeline(Path("/tmp/fake.mp4"), 99, roi, output_subdir="yolo_clips/clip_000")
+
+    cfg = captured_config_path["content"]
+    assert cfg["output_dir"] == str(RESULTS_DIR / "web_99" / "yolo_clips" / "clip_000")

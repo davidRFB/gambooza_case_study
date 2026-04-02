@@ -154,12 +154,14 @@ def build_track_info(cups: pd.DataFrame, min_dets: int) -> dict:
         if len(grp) < min_dets:
             continue
         tid = int(tid)
+        areas = (grp["x2"] - grp["x1"]) * (grp["y2"] - grp["y1"])
         info[tid] = {
             "first_frame": int(grp["frame"].iloc[0]),
             "last_frame": int(grp["frame"].iloc[-1]),
             "frames": set(grp["frame"].astype(int)),
             "median_cx": float(grp["cx"].median()),
             "median_cy": float(grp["cy"].median()),
+            "median_area": float(areas.median()),
             "n_dets": len(grp),
         }
     return info
@@ -570,13 +572,26 @@ def run_relink(
     for tid in tids_after:
         sub = relinked_cups[relinked_cups["track_id"] == tid].sort_values("frame")
         n_frames = len(sub)
-        cx_vals = sub["cx"].values
-        cy_vals = sub["cy"].values
+
+        # Filter out bbox-area outliers (tracker drift / bloated boxes).
+        # When BoT-SORT expands a bbox to cover two cups, the area jumps
+        # and the centre shifts, creating fake movement on a stationary cup.
+        areas = (sub["x2"] - sub["x1"]).values * (sub["y2"] - sub["y1"]).values
+        median_area = float(np.median(areas))
+        if median_area > 0:
+            area_ratio = areas / median_area
+            area_ok = (area_ratio > 0.5) & (area_ratio < 1.5)
+        else:
+            area_ok = np.ones(len(sub), dtype=bool)
+        cx_vals = sub["cx"].values[area_ok]
+        cy_vals = sub["cy"].values[area_ok]
+        if len(cx_vals) < 2:
+            cx_vals = sub["cx"].values
+            cy_vals = sub["cy"].values
         movement = float(np.sqrt(np.std(cx_vals) ** 2 + np.std(cy_vals) ** 2))
 
-        # Stationarity check: what fraction of frames is the cup within
-        # stationary_px of its median position? Cups left sitting in one
-        # spot (e.g. waiting on the counter) will have a high ratio.
+        # Stationarity check: what fraction of (filtered) frames is the cup
+        # within stationary_px of its median position?
         med_cx, med_cy = float(np.median(cx_vals)), float(np.median(cy_vals))
         dist_from_median = np.sqrt((cx_vals - med_cx) ** 2 + (cy_vals - med_cy) ** 2)
         frac_stationary = float(np.mean(dist_from_median < stationary_px))

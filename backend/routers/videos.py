@@ -216,6 +216,15 @@ def save_roi_config(
     if "tap_roi" not in yolo or "sam3_tap_bboxes" not in yolo:
         raise HTTPException(422, "yolo section must contain tap_roi and sam3_tap_bboxes")
 
+    # Validate optional "simple" section for pre-filtering ROIs
+    simple = roi_data.get("simple")
+    if simple is not None:
+        if "roi_1" not in simple:
+            raise HTTPException(422, "simple section must contain roi_1")
+        for key in ("roi_1", "roi_2"):
+            if key in simple and (not isinstance(simple[key], list) or len(simple[key]) != 4):
+                raise HTTPException(422, f"simple.{key} must be a list of 4 floats")
+
     config_name = f"{restaurant_name}_{camera_id}"
     path = ROI_CONFIGS_DIR / f"{config_name}.json"
     ROI_CONFIGS_DIR.mkdir(parents=True, exist_ok=True)

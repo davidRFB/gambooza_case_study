@@ -3,9 +3,11 @@
 import json
 import logging
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
+import cv2
 import yaml
 from sqlalchemy.orm import Session
 
@@ -14,6 +16,8 @@ from backend.database.models import TapEvent as TapEventModel
 from backend.database.models import Video
 
 logger = logging.getLogger(__name__)
+
+MAX_FRAMES_NOFILTER = 2500
 
 
 def _resolve_roi_config_name(restaurant_name: str | None, camera_id: str | None) -> str | None:
@@ -52,6 +56,17 @@ def process_video(video_id: int, db: Session):
         if not video_path.exists():
             raise FileNotFoundError(f"Video file not found: {video_path}")
 
+        # Detect video length
+        cap = cv2.VideoCapture(str(video_path))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        duration_s = total_frames / fps if fps else 0
+        cap.release()
+        video.total_frames = total_frames
+        video.duration_sec = round(duration_s, 2)
+        db.commit()
+        logger.info("Video %d: %d frames, %.1fs, %.1f fps", video_id, total_frames, duration_s, fps)
+
         # Resolve ROI config from restaurant + camera (mandatory)
         roi_config = _resolve_roi_config_name(video.restaurant_name, video.camera_id)
         if roi_config is None:
@@ -62,8 +77,23 @@ def process_video(video_id: int, db: Session):
         roi = _load_roi_config(roi_config)
         logger.info("ROI config '%s' loaded", roi_config)
 
-        # Build temp YOLO config and run pipeline
-        pour_events = _run_yolo_pipeline(video_path, video_id, roi)
+        # Branch: filtered pipeline for long videos, direct YOLO for short ones
+        use_filter = total_frames > MAX_FRAMES_NOFILTER and "simple" in roi
+        if use_filter:
+            logger.info("Long video with filter ROIs — running filtered pipeline")
+            pour_events = _run_filtered_pipeline(
+                video_path,
+                video_id,
+                roi,
+                video,
+                db,
+                fps,
+            )
+        else:
+            logger.info("Running direct YOLO pipeline")
+            t0 = time.time()
+            pour_events = _run_yolo_pipeline(video_path, video_id, roi)
+            video.yolo_time_s = round(time.time() - t0, 2)
         logger.info("Pipeline returned %d pour events", len(pour_events))
 
         # Clear any existing tap events from previous runs
@@ -91,7 +121,121 @@ def process_video(video_id: int, db: Session):
         db.commit()
 
 
-def _run_yolo_pipeline(video_path: Path, video_id: int, roi: dict) -> list[dict]:
+def _run_filtered_pipeline(
+    video_path: Path,
+    video_id: int,
+    roi: dict,
+    video: Video,
+    db: Session,
+    fps: float,
+) -> list[dict]:
+    """Run SimpleDetector pre-filter, extract clips, then YOLO on each clip.
+
+    Returns aggregated pour_events with timestamps mapped to original video.
+    """
+    from backend.ml.approach_simple.detector import SimpleDetector
+    from backend.ml.approach_simple.filtering import extract_clips, find_activity_windows
+
+    output_dir = RESULTS_DIR / f"web_{video_id}"
+
+    # --- Stage 1: SimpleDetector ---
+    video.status = "processing_filter"
+    db.commit()
+    logger.info("Video %d: running SimpleDetector filter", video_id)
+
+    t0 = time.time()
+    simple_roi = roi["simple"]
+    roi_1 = tuple(simple_roi["roi_1"])
+    roi_2 = tuple(simple_roi.get("roi_2", simple_roi["roi_1"]))
+
+    detector = SimpleDetector(
+        tap_a_roi=roi_1,
+        tap_b_roi=roi_2,
+        sample_every=3,
+        on_threshold=0.05,
+        min_on_frames=10,
+        n_workers=1,  # avoid multiprocessing issues in background tasks
+    )
+    result = detector.run(video_path)
+    video.filter_time_s = round(time.time() - t0, 2)
+    logger.info("Video %d: filter completed in %.1fs", video_id, video.filter_time_s)
+
+    # Save filter results
+    (output_dir / "simple_summary.json").write_text(json.dumps(result.to_dict(), indent=2))
+
+    # --- Stage 2: Find activity windows & extract clips ---
+    video.status = "processing_clips"
+    db.commit()
+
+    t0 = time.time()
+    windows = find_activity_windows(
+        times=result.times,
+        signals=result.signals,
+        threshold=0.05,
+        padding_s=5.0,
+        merge_gap_s=40.0,
+        total_duration=result.duration_s,
+    )
+
+    if not windows:
+        video.num_clips = 0
+        video.filtered_duration_s = 0
+        video.clip_extract_time_s = round(time.time() - t0, 2)
+        logger.info("Video %d: no activity windows found", video_id)
+        return []
+
+    clip_paths = extract_clips(video_path, windows, output_dir)
+    video.num_clips = len(clip_paths)
+    video.filtered_duration_s = round(sum(w["duration_s"] for w in windows), 2)
+    video.clip_extract_time_s = round(time.time() - t0, 2)
+    logger.info(
+        "Video %d: %d clips extracted (%.0fs of %.0fs)",
+        video_id,
+        len(clip_paths),
+        video.filtered_duration_s,
+        result.duration_s,
+    )
+
+    # Save activity windows
+    (output_dir / "activity_windows.json").write_text(json.dumps(windows, indent=2))
+    db.commit()
+
+    # --- Stage 3: YOLO on each clip ---
+    video.status = "processing_yolo"
+    db.commit()
+
+    t0 = time.time()
+    all_pour_events = []
+    for i, (clip_path, window) in enumerate(zip(clip_paths, windows)):
+        logger.info(
+            "Video %d: YOLO on clip %d/%d (%s)",
+            video_id,
+            i + 1,
+            len(clip_paths),
+            clip_path.name,
+        )
+        clip_subdir = f"yolo_clips/{clip_path.stem}"
+        clip_events = _run_yolo_pipeline(clip_path, video_id, roi, output_subdir=clip_subdir)
+
+        # Map timestamps back to original video timeline
+        offset_s = window["start_s"]
+        offset_frames = int(offset_s * fps)
+        for event in clip_events:
+            event["time_start"] += offset_s
+            event["time_end"] += offset_s
+            event["frame_start"] += offset_frames
+            event["frame_end"] += offset_frames
+        all_pour_events.extend(clip_events)
+
+    video.yolo_time_s = round(time.time() - t0, 2)
+    logger.info("Video %d: YOLO completed in %.1fs", video_id, video.yolo_time_s)
+
+    return all_pour_events
+
+
+def _run_yolo_pipeline(
+    video_path: Path, video_id: int, roi: dict, output_subdir: str | None = None
+) -> list[dict]:
     """Create a temp YOLO config and run the pipeline.
 
     Returns the list of pour_event dicts from YOLODetectorResult.
@@ -102,7 +246,11 @@ def _run_yolo_pipeline(video_path: Path, video_id: int, roi: dict) -> list[dict]
 
     # Override video path and output dir
     cfg["video_path"] = str(video_path)
-    output_dir = str(RESULTS_DIR / f"web_{video_id}")
+    base_output = RESULTS_DIR / f"web_{video_id}"
+    if output_subdir:
+        output_dir = str(base_output / output_subdir)
+    else:
+        output_dir = str(base_output)
     cfg["output_dir"] = output_dir
 
     # Override ROI and SAM3 bboxes from roi config
